@@ -13,6 +13,8 @@ Usage:
 """
 
 import os
+import re
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -22,6 +24,8 @@ import requests
 from psycopg.rows import dict_row
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, render_template, request
+
+from fetch_posts import fetch_subreddit
 
 load_dotenv()
 
@@ -66,7 +70,7 @@ def fetch_batch(cur, q: str, before: float | None) -> list[dict]:
     # The list view doesn't need full essays, so select a 300-char preview.
     cur.execute(
         f"""
-        SELECT id, title, author, created_utc, score, num_comments,
+        SELECT id, subreddit, title, author, created_utc, score, num_comments,
                left(selftext, 300) AS preview
         FROM posts
         WHERE {" AND ".join(where)}
@@ -117,6 +121,59 @@ def more():
         posts = fetch_batch(cur, q, before)
     return jsonify(html=render_template("_post_list.html", posts=posts),
                    next=next_cursor(posts))
+
+
+# --- Pulling new subreddits from the web UI -------------------------------
+#
+# A pull scans hundreds of posts with a 1s pause per page, so it can take
+# minutes — far too long to run inside a request (the browser would time out).
+# The classic fix at this scale: run it in a background *thread* and let the
+# page poll a status endpoint. The job state lives in a plain module-level
+# dict, which works because app.run() is a single process; with multiple
+# workers (gunicorn etc.) each process would have its own dict and you'd
+# reach for Redis or a job queue (Celery/RQ) instead.
+fetch_job: dict = {"state": "idle"}
+fetch_lock = threading.Lock()  # so two submits can't both pass the "running?" check
+
+# Subreddit names are 2–21 chars of letters/digits/underscore. Validating
+# up front gives a clear error instead of a silent empty result.
+SUBREDDIT_RE = re.compile(r"[A-Za-z0-9_]{2,21}")
+
+
+def run_fetch(subreddit: str, limit: int) -> None:
+    def progress(scanned, stored, oldest_ts):
+        fetch_job.update(scanned=scanned, stored=stored)
+
+    try:
+        scanned, stored = fetch_subreddit(subreddit, limit, progress=progress)
+        fetch_job.update(state="done", scanned=scanned, stored=stored)
+    except Exception as exc:  # surface the failure to the UI, don't die silently
+        fetch_job.update(state="error", error=str(exc))
+
+
+@app.route("/fetch", methods=["POST"])
+def fetch():
+    subreddit = request.form.get("subreddit", "").strip().removeprefix("r/")
+    limit = min(request.form.get("limit", type=int) or 500, 10_000)
+    if not SUBREDDIT_RE.fullmatch(subreddit):
+        return jsonify(error="not a valid subreddit name"), 400
+
+    with fetch_lock:
+        if fetch_job["state"] == "running":
+            # 409 Conflict: the request is fine, the current state forbids it.
+            return jsonify(error=f"already pulling r/{fetch_job['subreddit']}"), 409
+        fetch_job.clear()
+        fetch_job.update(state="running", subreddit=subreddit, scanned=0, stored=0)
+
+    # daemon=True: don't let a half-finished pull block server shutdown —
+    # the per-page commit in fetch_subreddit means nothing is lost.
+    threading.Thread(target=run_fetch, args=(subreddit, limit), daemon=True).start()
+    return jsonify(fetch_job)
+
+
+@app.route("/fetch/status")
+def fetch_status():
+    return jsonify(fetch_job)
 
 
 def fetch_comments_from_arctic_shift(post_id: str) -> list[tuple]:

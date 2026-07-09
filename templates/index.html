@@ -14,7 +14,36 @@
   .preview { color: var(--muted); font-size: .9rem; margin: 0; }
   .stats { display: flex; gap: 1rem; color: var(--muted); font-size: .82rem; margin-top: .5rem; }
   #scroll-status { text-align: center; color: var(--muted); padding: 1.2rem 0; font-size: .9rem; }
+  form.pull {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: .7rem .9rem; margin-bottom: 1rem;
+  }
+  form.pull input {
+    padding: .4rem .6rem; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); font-size: .9rem;
+  }
+  form.pull input[name=subreddit] { flex: 1; min-width: 10rem; }
+  form.pull input[name=limit] { width: 6rem; }
+  form.pull button {
+    padding: .4rem .9rem; border: none; border-radius: 6px;
+    background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
+  }
+  form.pull button:disabled { opacity: .5; cursor: default; }
+  #pull-status { flex-basis: 100%; color: var(--muted); font-size: .85rem; }
+  #pull-status:empty { display: none; }
 </style>
+
+{# Pull form: kicks off a background fetch on the server (POST /fetch),
+   then polls /fetch/status until it finishes. #}
+<form class="pull" id="pull-form">
+  <input name="subreddit" placeholder="subreddit, e.g. LocalLLaMA" required
+         pattern="(r/)?[A-Za-z0-9_]{2,21}" title="letters, digits, underscore">
+  <input name="limit" type="number" value="500" min="1" max="10000"
+         title="how many posts to scan">
+  <button type="submit">Pull</button>
+  <span id="pull-status"></span>
+</form>
 
 <p class="meta-line">
   {{ total }} post{{ '' if total == 1 else 's' }}
@@ -27,6 +56,67 @@
 </div>
 
 <div id="scroll-status">{% if next %}loading more…{% else %}— end —{% endif %}</div>
+
+<script>
+  // The pull form: submit starts a server-side fetch, then we poll
+  // /fetch/status every 2s. Polling beats holding the request open because
+  // the browser (and any proxy/tunnel in between) would kill a connection
+  // that sits silent for minutes.
+  const pullForm = document.getElementById("pull-form");
+  const pullStatus = document.getElementById("pull-status");
+  const pullButton = pullForm.querySelector("button");
+  let pollTimer = null;
+
+  function showJob(job) {
+    if (job.state === "running") {
+      pullButton.disabled = true;
+      pullStatus.textContent =
+        `pulling r/${job.subreddit}… scanned ${job.scanned}, stored ${job.stored}`;
+      if (!pollTimer) pollTimer = setInterval(poll, 2000);
+    } else {
+      pullButton.disabled = false;
+      clearInterval(pollTimer);
+      pollTimer = null;
+      if (job.state === "done") {
+        pullStatus.textContent =
+          `done: r/${job.subreddit} — scanned ${job.scanned}, stored ${job.stored} text posts. `;
+        const a = document.createElement("a");
+        a.href = "/";
+        a.textContent = "reload to see them";
+        pullStatus.appendChild(a);
+      } else if (job.state === "error") {
+        pullStatus.textContent = `pull failed: ${job.error}`;
+      }
+    }
+  }
+
+  async function poll() {
+    try {
+      showJob(await (await fetch("/fetch/status")).json());
+    } catch (err) { /* transient network blip — next tick retries */ }
+  }
+
+  pullForm.addEventListener("submit", async (e) => {
+    e.preventDefault();  // stay on the page; JS talks to the server instead
+    pullStatus.textContent = "starting…";
+    const resp = await fetch("/fetch", {
+      method: "POST",
+      body: new FormData(pullForm),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      pullStatus.textContent = data.error;
+      return;
+    }
+    showJob(data);
+  });
+
+  // If a pull is already running (page reload, second tab), pick it up —
+  // but ignore a finished job from earlier, or every page load would
+  // re-announce it.
+  fetch("/fetch/status").then(r => r.json())
+    .then(job => { if (job.state === "running") showJob(job); });
+</script>
 
 {% if next %}
 <script>
