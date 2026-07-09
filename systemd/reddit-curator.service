@@ -1,0 +1,15 @@
+[Unit]
+Description=Fetch new r/singularity posts and curate readings
+# Managed from /home/pokr/0/media — fetch is failure-tolerated (Arctic Shift
+# down shouldn't block curating the backlog); curator aborts fast if the
+# LLM server is unreachable and the timer retries later.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/pokr/0/media
+ExecStart=-/home/pokr/0/media/.venv/bin/python fetch_posts.py --limit 200
+ExecStart=/home/pokr/0/media/.venv/bin/python curate_readings.py
+# Long leash: a big backlog can take hours; kill only if truly wedged.
+TimeoutStartSec=12h
+# Keep the desktop responsive while Qwen is thinking.
+Nice=10

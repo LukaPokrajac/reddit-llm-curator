@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the reddit curator pipeline continuously
+
+[Timer]
+# First run shortly after login/boot, then 30 min after each run *finishes*
+# (OnUnitInactiveSec), so runs never overlap and a long backlog self-paces.
+OnStartupSec=2min
+OnUnitInactiveSec=30min
+
+[Install]
+WantedBy=timers.target
