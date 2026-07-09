@@ -5,4 +5,5 @@ python-dotenv
 markdown
 nh3
 trafilatura
+gunicorn
 pytest

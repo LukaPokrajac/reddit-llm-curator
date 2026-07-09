@@ -13,6 +13,7 @@ Usage:
 """
 
 import hmac
+import json
 import os
 import re
 import threading
@@ -528,6 +529,32 @@ def split_chat_reply(text: str) -> tuple[str, str | None]:
     return text.strip(), None
 
 
+def stream_reply(messages, on_partial) -> str:
+    """One streamed chat completion; on_partial gets the text so far after
+    each chunk. At ~5 tokens/s a reply takes minutes — watching it grow is
+    the difference between 'working' and 'broken' in the UI."""
+    resp = requests.post(
+        LOCALAI,
+        json={"model": MODEL, "max_tokens": CHAT_MAX_TOKENS,
+              "messages": messages, "stream": True},
+        timeout=LLM_TIMEOUT, stream=True,
+    )
+    resp.raise_for_status()
+    parts: list[str] = []
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data:"):
+            continue  # SSE keep-alives and blank separators
+        data = line[len("data:"):].strip()
+        if data == "[DONE]":
+            break
+        delta = json.loads(data)["choices"][0].get("delta", {})
+        piece = delta.get("content") or ""  # thinking chunks have no content
+        if piece:
+            parts.append(piece)
+            on_partial("".join(parts))
+    return "".join(parts).strip()
+
+
 def run_chat(post_id: str) -> None:
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -543,14 +570,14 @@ def run_chat(post_id: str) -> None:
             messages.append({"role": m["role"],
                              "content": m["content"][:CHAT_MSG_CAP]})
 
-        resp = requests.post(
-            LOCALAI,
-            json={"model": MODEL, "max_tokens": CHAT_MAX_TOKENS,
-                  "messages": messages},
-            timeout=LLM_TIMEOUT,
-        )
-        resp.raise_for_status()
-        reply = resp.json()["choices"][0]["message"]["content"].strip()
+        def on_partial(text: str) -> None:
+            # The article-replacement tail is an implementation detail;
+            # stop mirroring once the marker appears.
+            job = chat_jobs.get(post_id)
+            if job is not None and job.get("state") == "running":
+                job["partial"] = text.split(ARTICLE_MARKER)[0].strip()
+
+        reply = stream_reply(messages, on_partial)
         prose, new_article = split_chat_reply(reply)
 
         with get_conn() as conn, conn.cursor() as cur:

@@ -89,8 +89,8 @@
   {% endfor %}
   {% if admin %}
   <div id="thinking" hidden>qwen is thinking — minutes on this hardware,
-    longer if it's mid-curation. The reply lands here when ready; you can
-    leave and come back.</div>
+    longer if it's mid-curation. The reply streams in above as it's written;
+    you can leave and come back.</div>
   <div id="chat-error" hidden></div>
   <form id="chat-form">
     <textarea name="message" placeholder="Ask a follow-up, or tell qwen to rewrite/extend the piece…" required></textarea>
@@ -126,10 +126,30 @@
     form.querySelector("button").disabled = busy;
   }
 
+  // While the reply streams from the model (minutes at ~5 tok/s), mirror
+  // the text so far into a live bubble; the reload at the end swaps it for
+  // the server-rendered markdown version.
+  let live = null;
+  function showLive(text) {
+    if (!live) {
+      live = document.createElement("div");
+      live.className = "msg assistant";
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = "qwen — writing…";
+      const body = document.createElement("div");
+      body.style.whiteSpace = "pre-wrap";
+      live.append(who, body);
+      thinking.before(live);
+    }
+    live.lastChild.textContent = text;
+  }
+
   async function poll() {
     const resp = await fetch("/readings/{{ r.post_id }}/chat/status");
     const job = await resp.json();
     if (job.state === "running") {
+      if (job.partial) showLive(job.partial);
       setTimeout(poll, 3000);
     } else if (job.state === "error") {
       setBusy(false);

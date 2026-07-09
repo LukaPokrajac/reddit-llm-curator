@@ -1,0 +1,17 @@
+[Unit]
+Description=Reading curator web UI (gunicorn)
+After=network.target
+
+[Service]
+WorkingDirectory=/home/pokr/0/media
+# ONE worker, many threads — on purpose. Background jobs (subreddit pulls,
+# chat replies) and their progress live in module-level dicts, which only
+# exist once per process; a second worker would answer status polls with
+# "idle" for jobs the first worker is running. Threads share the dicts.
+ExecStart=/home/pokr/0/media/.venv/bin/gunicorn --workers 1 --threads 16 \
+    --bind 0.0.0.0:8010 --timeout 120 app:app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
