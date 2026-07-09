@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 # Reuse the Flask app's Arctic Shift comment fetcher (module import does not
 # start the server — that's guarded by __main__).
 from app import fetch_comments_from_arctic_shift
+from embeddings import embed, post_text, vec_literal
 
 load_dotenv()
 
@@ -48,6 +49,8 @@ knows well: Python, Docker, Kafka, PostgreSQL, MQTT/ESP32 embedded work, Grafana
 ETL/Airflow. What he is currently learning (explain these when they come up): ML \
 fundamentals, linear algebra, power electronics, robotics. He does not follow \
 day-to-day AI drama, and does not want hype, memes, doomposting or culture war.
+If RELATED PAST POSTS show the same news or discussion was already covered,
+lean SKIP and say it's a rehash; if a past SIGNAL piece connects, reference it.
 
 You will get one Reddit post from r/singularity with top comments. Respond in
 EXACTLY this format:
@@ -61,6 +64,16 @@ terms he may not know. Correct factual errors commenters make. Where genuine,
 connect to his world (automation, embedded, data engineering, local LLMs on his
 RX 6600 XT) or to the earlier pieces listed as context. End with one line:
 **Worth going deeper:** yes/no plus what to search for if yes."""
+
+
+def llm_ready() -> bool:
+    """Quick health check so an unattended run aborts cleanly (and gets
+    retried by the timer) instead of marking every pending post ERROR."""
+    base = LOCALAI.rsplit("/chat/completions", 1)[0]
+    try:
+        return requests.get(f"{base}/models", timeout=10).ok
+    except requests.RequestException:
+        return False
 
 
 def log(msg: str) -> None:
@@ -134,10 +147,48 @@ def top_comments(cur, post_id: str) -> str:
     return trim_comments([(r["body"], r["score"]) for r in cur.fetchall()])
 
 
-def ask_model(post: dict, comments: str, prev_titles: list[str]) -> str:
+def post_vector(conn, cur, post: dict) -> str:
+    """The post's embedding in pgvector text form, computing and storing it
+    if fetch_posts ran while the embedding server was down."""
+    if post.get("embedding") is not None:
+        return post["embedding"]
+    vec = vec_literal(embed(post_text(post["title"], post["selftext"])))
+    cur.execute("UPDATE posts SET embedding = %s::vector WHERE id = %s",
+                (vec, post["id"]))
+    conn.commit()
+    return vec
+
+
+def related_posts(cur, post_id: str, vector: str) -> str:
+    """Semantically closest already-judged posts, as a prompt block. Lets the
+    model spot rehashes and link to earlier coverage beyond tonight's run.
+    Cosine similarity below ~0.5 is noise for nomic-embed-text, so we cut there."""
+    cur.execute(
+        """SELECT p.title, p.created_utc, r.verdict, r.reason
+           FROM posts p JOIN readings r ON r.post_id = p.id
+           WHERE p.embedding IS NOT NULL AND p.id <> %s
+             AND r.verdict IN ('SIGNAL', 'SKIP')
+             AND 1 - (p.embedding <=> %s::vector) > 0.5
+           ORDER BY p.embedding <=> %s::vector
+           LIMIT 5""",
+        (post_id, vector, vector),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return "(none)"
+    return "\n".join(
+        f"- [{r['verdict']}, {r['created_utc']:%Y-%m-%d}] {r['title']}"
+        + (f" — {r['reason']}" if r["reason"] else "")
+        for r in rows
+    )
+
+
+def ask_model(post: dict, comments: str, prev_titles: list[str],
+              related: str = "(none)") -> str:
     prev = "\n".join(f"- {t}" for t in prev_titles[-15:]) or "(none yet)"
     user = (
         f"Earlier SIGNAL pieces tonight (for cross-referencing):\n{prev}\n\n"
+        f"RELATED PAST POSTS (semantic matches, how they were judged):\n{related}\n\n"
         f"POST from r/{post['subreddit']} ({post['created_utc']:%Y-%m-%d}, "
         f"{post['score']} points, {post['num_comments']} comments)\n"
         f"TITLE: {post['title']}\n"
@@ -199,15 +250,22 @@ def main() -> None:
     ensure_table(cur)
     conn.commit()
 
+    # New posts plus earlier ERRORs (LLM hiccups) — those deserve a retry.
     cur.execute("""
         SELECT p.* FROM posts p
         LEFT JOIN readings r ON r.post_id = p.id
-        WHERE r.post_id IS NULL
+        WHERE r.post_id IS NULL OR r.verdict = 'ERROR'
         ORDER BY p.created_utc DESC
     """)
     todo = cur.fetchall()
     if args.limit:
         todo = todo[: args.limit]
+    if not todo:
+        log("run start: nothing to process")
+        return
+    if not llm_ready():
+        log(f"run abort: LLM server not responding at {LOCALAI}")
+        sys.exit(1)
     log(f"run start: {len(todo)} posts to process")
 
     cur.execute("SELECT p.title FROM readings r JOIN posts p ON p.id = r.post_id "
@@ -224,10 +282,17 @@ def main() -> None:
                 conn.rollback()
                 log(f"  comments unavailable for {post['id']}: {e}")
             comments = top_comments(cur, post["id"])
-            reply = ask_model(post, comments, prev_titles)
+            try:
+                related = related_posts(cur, post["id"],
+                                        post_vector(conn, cur, post))
+            except Exception as e:  # embedding server down — curate without
+                conn.rollback()
+                related = "(unavailable)"
+                log(f"  related posts unavailable for {post['id']}: {e}")
+            reply = ask_model(post, comments, prev_titles, related)
             verdict, reason, article = parse_reply(reply)
             if verdict == "ERROR":  # malformed reply — one more try
-                reply = ask_model(post, comments, prev_titles)
+                reply = ask_model(post, comments, prev_titles, related)
                 verdict, reason, article = parse_reply(reply)
         except Exception as e:  # LLM/API/network hiccup: record and move on
             verdict, reason, article = "ERROR", f"{type(e).__name__}: {e}"[:300], None

@@ -1,3 +1,7 @@
+-- Semantic similarity between posts (see embeddings.py). Needs the pgvector
+-- extension compiled into the server, e.g. the pgvector/pgvector:pg16 image.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS posts (
     id           text PRIMARY KEY,          -- Reddit's base36 post id, e.g. "1dxyz9"
     subreddit    text NOT NULL,
@@ -9,10 +13,14 @@ CREATE TABLE IF NOT EXISTS posts (
     num_comments integer NOT NULL,
     permalink    text NOT NULL,
     fetched_at   timestamptz NOT NULL DEFAULT now(),
-    comments_fetched_at timestamptz         -- NULL = comments never fetched
+    comments_fetched_at timestamptz,        -- NULL = comments never fetched
+    embedding    vector(768)                -- nomic-embed-text of title+body;
+                                            -- NULL until embeddings.py backfills
 );
 
 CREATE INDEX IF NOT EXISTS posts_created_utc_idx ON posts (created_utc DESC);
+-- No ANN index on embedding: exact scan is fast up to ~100K rows; add
+-- `USING hnsw (embedding vector_cosine_ops)` if the table ever gets there.
 
 CREATE TABLE IF NOT EXISTS comments (
     id          text PRIMARY KEY,            -- Reddit's base36 comment id
