@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Weekly syntheses{% endblock %}
+
+{% block content %}
+<style>
+  article.week {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: .9rem 1.1rem; margin-bottom: .8rem;
+  }
+  article.week h2 { margin: 0 0 .25rem; font-size: 1.05rem; }
+  article.week h2 a { color: var(--text); text-decoration: none; }
+  article.week h2 a:hover { color: var(--accent); }
+  .wmeta { color: var(--muted); font-size: .82rem; }
+  .wpreview { color: var(--muted); font-size: .9rem; margin: .35rem 0 0; }
+</style>
+
+<p class="meta-line">One piece per week connecting that week's readings —
+what actually moved, written by the same curator.</p>
+
+{% for s in rows %}
+<article class="week">
+  <h2><a href="/weekly/{{ s.id }}">Week of {{ s.period_start.strftime('%B %-d') }}
+    – {{ s.period_end.strftime('%B %-d, %Y') }}</a></h2>
+  <div class="wmeta">{{ s.n_pieces }} readings synthesized ·
+    written {{ s.created_at.strftime('%Y-%m-%d') }}</div>
+  <p class="wpreview">{{ s.preview }}…</p>
+</article>
+{% else %}
+<p>No syntheses yet — the first one is written after a week of readings
+accumulates (synthesize.py, weekly timer).</p>
+{% endfor %}
+{% endblock %}

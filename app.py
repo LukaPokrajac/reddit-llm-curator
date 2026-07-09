@@ -373,6 +373,38 @@ def readings_status():
                    latest=row["latest"].isoformat() if row["latest"] else None)
 
 
+@app.route("/weekly")
+def weekly():
+    """Weekly syntheses: one piece per week connecting that week's SIGNAL
+    readings (written by synthesize.py on a timer)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id, period_start, period_end, created_at,
+                              array_length(post_ids, 1) AS n_pieces,
+                              left(article, 300) AS preview
+                       FROM syntheses ORDER BY period_end DESC""")
+        rows = cur.fetchall()
+    return render_template("weekly.html", rows=rows)
+
+
+@app.route("/weekly/<int:sid>")
+def weekly_one(sid):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM syntheses WHERE id = %s", (sid,))
+        row = cur.fetchone()
+        if row is None:
+            abort(404)
+        cur.execute(
+            """SELECT r.post_id, p.title, r.read_at
+               FROM readings r JOIN posts p ON p.id = r.post_id
+               WHERE r.post_id = ANY(%s)
+               ORDER BY p.created_utc DESC""",
+            (row["post_ids"],),
+        )
+        sources = cur.fetchall()
+    return render_template("weekly_one.html", s=row,
+                           body=render_md(row["article"]), sources=sources)
+
+
 @app.route("/readings/<post_id>")
 def reading(post_id):
     with get_conn() as conn, conn.cursor() as cur:

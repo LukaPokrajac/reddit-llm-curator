@@ -76,3 +76,16 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 
 CREATE INDEX IF NOT EXISTS feedback_post_id_idx ON feedback (post_id, id);
+
+-- Weekly synthesis pieces: synthesize.py connects a week's SIGNAL readings
+-- into one "what actually moved this week" article, served at /weekly.
+CREATE TABLE IF NOT EXISTS syntheses (
+    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    period_start date NOT NULL,
+    period_end   date NOT NULL,          -- inclusive
+    article      text NOT NULL,
+    model        text NOT NULL,
+    post_ids     text[] NOT NULL,        -- the readings it drew from
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (period_start, period_end)
+);

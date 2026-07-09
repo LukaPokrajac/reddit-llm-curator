@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly synthesis of the week's readings
+
+[Timer]
+# Sunday evening, after the week's posts have mostly been curated.
+OnCalendar=Sun 20:00
+# If the machine was off at the scheduled time, run on next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

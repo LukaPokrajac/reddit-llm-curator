@@ -1,0 +1,12 @@
+[Unit]
+Description=Write the weekly synthesis piece from the week's readings
+# One LLM call over excerpts of the week's SIGNAL pieces (synthesize.py);
+# skips cleanly when the week has too few pieces or the LLM is down —
+# the timer's Persistent=true retries after the next boot if a run misses.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/pokr/0/media
+ExecStart=/home/pokr/0/media/.venv/bin/python synthesize.py
+TimeoutStartSec=1h
+Nice=10
