@@ -295,8 +295,44 @@ def post(post_id):
             cur.execute("SELECT * FROM comments WHERE post_id = %s", (post_id,))
             comments = cur.fetchall()
 
+        feedback = fetch_feedback(cur, post_id)
+
     return render_template("post.html", p=row, tree=build_tree(comments),
-                           n_comments=len(comments))
+                           n_comments=len(comments), feedback=feedback)
+
+
+# --- Reader feedback --------------------------------------------------------
+#
+# Free-text notes on a post ("wrong call, I wanted this", "great piece").
+# This is the curator's learning signal: curate_readings.py retrieves the
+# notes attached to semantically similar judged posts and puts them in the
+# prompt, so a note left today changes verdicts on similar posts tomorrow.
+def fetch_feedback(cur, post_id: str) -> list[dict]:
+    cur.execute("SELECT content, created_at FROM feedback "
+                "WHERE post_id = %s ORDER BY id", (post_id,))
+    return cur.fetchall()
+
+
+@app.route("/post/<post_id>/feedback", methods=["POST"])
+def add_feedback(post_id):
+    if not is_admin():
+        return deny_guest()
+    content = request.form.get("content", "").strip()
+    if not content:
+        return redirect(f"/post/{post_id}")
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM posts WHERE id = %s", (post_id,))
+        if cur.fetchone() is None:
+            abort(404)
+        cur.execute("INSERT INTO feedback (post_id, content) VALUES (%s, %s)",
+                    (post_id, content))
+        conn.commit()
+    # Plain form POST -> bounce back to whichever page hosted the form.
+    # Only local paths: a full URL here would be an open-redirect hole.
+    back = request.form.get("back", "")
+    if not back.startswith("/") or back.startswith("//"):
+        back = f"/post/{post_id}"
+    return redirect(back)
 
 
 @app.route("/readings")
@@ -353,11 +389,13 @@ def reading(post_id):
         cur.execute("SELECT role, content FROM chat_messages "
                     "WHERE post_id = %s ORDER BY id", (post_id,))
         chat = cur.fetchall()
+        feedback = fetch_feedback(cur, post_id)
     for m in chat:  # user text renders escaped; model replies are markdown
         if m["role"] == "assistant":
             m["html"] = render_md(m["content"])
     body = render_md(row["article"])
-    return render_template("reading.html", r=row, body=body, chat=chat)
+    return render_template("reading.html", r=row, body=body, chat=chat,
+                           feedback=feedback)
 
 
 # --- Chat with the curator under a reading --------------------------------

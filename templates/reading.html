@@ -75,6 +75,8 @@
 </div>
 {% endif %}
 
+{% with pid = r.post_id %}{% include "_feedback.html" %}{% endwith %}
+
 <section id="chat">
   <h2>Ask qwen about this</h2>
   {% for m in chat %}

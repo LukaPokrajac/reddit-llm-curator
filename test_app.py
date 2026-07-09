@@ -73,6 +73,10 @@ def test_guest_cannot_chat(client):
 def test_guest_cannot_mark_read(client):
     assert client.post("/readings/abc123/read").status_code == 403
 
+def test_guest_cannot_leave_feedback(client):
+    assert client.post("/post/abc123/feedback",
+                       data={"content": "note"}).status_code == 403
+
 def test_wrong_cookie_is_still_guest(client):
     client.set_cookie("admin", "wrong-token")
     assert client.post("/fetch", data={"subreddit": "python"}).status_code == 403

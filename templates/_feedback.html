@@ -1,0 +1,48 @@
+{# Reader notes on a post. Included by post.html and reading.html with:
+     pid      — the post id
+     feedback — list of {content, created_at}
+   The form is owner-only; notes themselves are visible to guests, same as
+   chats — the demo shows the feedback loop working, not just its existence. #}
+<style>
+  .fb-box {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem 1.2rem; margin-top: 1rem;
+  }
+  .fb-box h2 { margin: 0 0 .6rem; font-size: 1.05rem; }
+  .fb-hint { color: var(--muted); font-size: .85rem; margin: 0 0 .8rem; }
+  .fb-note {
+    border-left: 3px solid var(--accent); padding: .4rem .8rem;
+    margin-bottom: .5rem; font-size: .93rem; white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .fb-note .fb-when { color: var(--muted); font-size: .78rem; margin-left: .5rem; }
+  .fb-form { display: flex; gap: .6rem; align-items: flex-end; }
+  .fb-form textarea {
+    flex: 1; min-height: 2.8rem; resize: vertical; padding: .55rem .7rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); color: var(--text); font: inherit; font-size: .93rem;
+  }
+  .fb-form button {
+    padding: .55rem 1.2rem; border: none; border-radius: 999px; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: 600; font-size: .9rem;
+  }
+</style>
+
+<section class="fb-box">
+  <h2>{{ 'Your notes' if admin else "Luka's notes" }}</h2>
+  <p class="fb-hint">Notes here feed back into the curator: when it judges a
+    similar post later, it sees them and adjusts.</p>
+  {% for n in feedback %}
+  <div class="fb-note">{{ n.content }}<span class="fb-when">{{ n.created_at.strftime('%Y-%m-%d') }}</span></div>
+  {% else %}
+  {% if not admin %}<p class="fb-hint">(none on this one yet)</p>{% endif %}
+  {% endfor %}
+  {% if admin %}
+  <form class="fb-form" method="post" action="/post/{{ pid }}/feedback">
+    <input type="hidden" name="back" value="{{ request.path }}">
+    <textarea name="content" required
+      placeholder="How do you feel about this post or the curator's call on it?"></textarea>
+    <button type="submit">Save note</button>
+  </form>
+  {% endif %}
+</section>

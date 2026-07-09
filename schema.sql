@@ -60,3 +60,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS chat_messages_post_id_idx ON chat_messages (post_id, id);
+
+-- Free-text reader notes on a post ("wrong call — I wanted this one",
+-- "loved the depth here"). The curator retrieves notes attached to
+-- semantically similar judged posts and uses them to calibrate future
+-- verdicts — this is what makes the profile learn instead of staying static.
+CREATE TABLE IF NOT EXISTS feedback (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    post_id    text NOT NULL REFERENCES posts (id),
+    content    text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS feedback_post_id_idx ON feedback (post_id, id);

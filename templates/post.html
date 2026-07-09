@@ -51,6 +51,8 @@
   </div>
 </article>
 
+{% with pid = p.id %}{% include "_feedback.html" %}{% endwith %}
+
 {# A macro is Jinja's version of a function — and it can call itself,
    which is exactly what rendering a tree of unknown depth needs. #}
 {% macro comment(c) %}
