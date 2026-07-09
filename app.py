@@ -26,7 +26,7 @@ from psycopg.rows import dict_row
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, redirect, render_template, request
 
-from fetch_posts import fetch_subreddit, fetch_comments_from_arctic_shift
+from fetch_posts import fetch_subreddit, fetch_comments, community
 # Importing curate_readings is safe: its run loop is guarded by __main__.
 from curate_readings import LOCALAI, MODEL, PROFILE, LLM_TIMEOUT, top_comments
 
@@ -65,7 +65,9 @@ def deny_guest():
 @app.context_processor
 def inject_admin():
     # Every template can check {% if admin %} to hide owner-only controls.
-    return {"admin": is_admin()}
+    # community() labels a post's origin ("HN" / "r/singularity") anywhere
+    # a template shows one.
+    return {"admin": is_admin(), "community": community}
 
 
 @app.route("/unlock/<token>")
@@ -112,8 +114,8 @@ def fetch_batch(cur, q: str, before: float | None) -> list[dict]:
     # The list view doesn't need full essays, so select a 300-char preview.
     cur.execute(
         f"""
-        SELECT id, subreddit, title, author, created_utc, score, num_comments,
-               left(selftext, 300) AS preview
+        SELECT id, subreddit, source, title, author, created_utc, score,
+               num_comments, left(selftext, 300) AS preview
         FROM posts
         WHERE {" AND ".join(where)}
         ORDER BY created_utc DESC
@@ -273,7 +275,7 @@ def post(post_id):
         # why we track our own marker (comments_fetched_at) instead of
         # trusting a number that ages.
         if row["comments_fetched_at"] is None or refresh:
-            fetched = fetch_comments_from_arctic_shift(post_id)
+            fetched = fetch_comments(post_id)
             cur.executemany(
                 """
                 INSERT INTO comments (id, post_id, parent_id, author, body,
@@ -350,7 +352,8 @@ def readings():
             SELECT r.post_id, r.verdict, r.reason, r.read_at, r.created_at,
                    coalesce(array_length(regexp_split_to_array(r.article, '\\s+'), 1), 0)
                        AS words,
-                   p.subreddit, p.title, p.created_utc, p.score, p.num_comments
+                   p.subreddit, p.source, p.title, p.created_utc, p.score,
+                   p.num_comments
             FROM readings r JOIN posts p ON p.id = r.post_id
             WHERE {where}
             ORDER BY (r.read_at IS NULL) DESC, p.created_utc DESC
@@ -409,7 +412,7 @@ def weekly_one(sid):
 def reading(post_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT r.*, p.subreddit, p.title, p.permalink, p.url,
+            """SELECT r.*, p.subreddit, p.source, p.title, p.permalink, p.url,
                       p.created_utc, p.score, p.num_comments
                FROM readings r JOIN posts p ON p.id = r.post_id
                WHERE r.post_id = %s""",
@@ -491,8 +494,8 @@ CHAT_MAX_TOKENS = 3000
 def chat_context(cur, post_id: str) -> str:
     """The pinned first message: post, comments, and the current piece."""
     cur.execute(
-        """SELECT p.subreddit, p.title, p.selftext, p.created_utc, p.score,
-                  p.url, p.link_text, r.verdict, r.reason, r.article
+        """SELECT p.subreddit, p.source, p.title, p.selftext, p.created_utc,
+                  p.score, p.url, p.link_text, r.verdict, r.reason, r.article
            FROM posts p JOIN readings r ON r.post_id = p.id
            WHERE p.id = %s""",
         (post_id,),
@@ -508,7 +511,7 @@ def chat_context(cur, post_id: str) -> str:
     else:
         body = f"BODY:\n{row['selftext'][:CHAT_BODY_CAP]}"
     return (
-        f"POST from r/{row['subreddit']} ({row['created_utc']:%Y-%m-%d}, "
+        f"POST from {community(row)} ({row['created_utc']:%Y-%m-%d}, "
         f"{row['score']} points)\n"
         f"TITLE: {row['title']}\n"
         f"{body}\n\n"

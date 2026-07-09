@@ -133,6 +133,21 @@ def fetch_subreddit(subreddit: str, limit: int = 500, before: int | None = None,
     return scanned, stored
 
 
+def fetch_comments(post_id: str) -> list[tuple]:
+    """Comments for any post id, whatever its source: hn_-prefixed ids go to
+    the Algolia item API, everything else to Arctic Shift. The one place
+    callers (curator, web UI) need to know about."""
+    if post_id.startswith("hn_"):
+        from fetch_hn import fetch_comments_hn  # avoid an import cycle
+        return fetch_comments_hn(post_id)
+    return fetch_comments_from_arctic_shift(post_id)
+
+
+def community(row: dict) -> str:
+    """Human label for where a post is from: 'HN' or 'r/<subreddit>'."""
+    return "HN" if row.get("source") == "hn" else f"r/{row['subreddit']}"
+
+
 def fetch_comments_from_arctic_shift(post_id: str) -> list[tuple]:
     """Pull all comments for one post from Arctic Shift, oldest first."""
     session = requests.Session()

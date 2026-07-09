@@ -50,7 +50,7 @@
   <div class="foot">
     <span>▲ {{ p.score }}</span>
     <span>💬 {{ p.num_comments }} comments</span>
-    <a href="{{ p.permalink }}" target="_blank" rel="noopener">view on Reddit ↗</a>
+    <a href="{{ p.permalink }}" target="_blank" rel="noopener">view on {{ 'HN' if p.source == 'hn' else 'Reddit' }} ↗</a>
     <span>fetched {{ p.fetched_at.strftime("%Y-%m-%d %H:%M") }}</span>
   </div>
 </article>
@@ -74,7 +74,7 @@
 
 <section class="comments-box">
   <h2>{{ n_comments }} comment{{ '' if n_comments == 1 else 's' }}
-    <a href="/post/{{ p.id }}?refresh">refresh from Arctic Shift</a>
+    <a href="/post/{{ p.id }}?refresh">refresh comments</a>
   </h2>
   {% for c in tree %}
     {{ comment(c) }}

@@ -49,7 +49,7 @@
     {% endif %}
   </h2>
   <div class="rmeta">
-    <span>r/{{ r.subreddit }}</span>
+    <span>{{ community(r) }}</span>
     <span>{{ r.created_utc.strftime('%b %d') }}</span>
     <span>{{ r.score }} points · {{ r.num_comments }} comments</span>
     {% if r.verdict == 'SIGNAL' %}<span>~{{ r.words }} words</span>{% endif %}

@@ -5,7 +5,7 @@
 <article class="post">
   <h2><a href="/post/{{ p.id }}">{{ p.title }}</a></h2>
   <div class="byline">
-    r/{{ p.subreddit }} · u/{{ p.author or "[deleted]" }} · {{ p.created_utc.strftime("%b %-d, %Y %H:%M") }} UTC
+    {{ community(p) }} · u/{{ p.author or "[deleted]" }} · {{ p.created_utc.strftime("%b %-d, %Y %H:%M") }} UTC
   </div>
   <p class="preview">{{ p.preview }}{% if p.preview|length == 300 %}…{% endif %}</p>
   <div class="stats">

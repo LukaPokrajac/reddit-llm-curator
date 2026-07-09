@@ -3,8 +3,10 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS posts (
-    id           text PRIMARY KEY,          -- Reddit's base36 post id, e.g. "1dxyz9"
-    subreddit    text NOT NULL,
+    id           text PRIMARY KEY,          -- Reddit's base36 post id ("1dxyz9"),
+                                            -- or "hn_<id>" for Hacker News stories
+    subreddit    text NOT NULL,             -- community label; 'hackernews' for HN
+    source       text NOT NULL DEFAULT 'reddit',  -- reddit | hn
     title        text NOT NULL,
     selftext     text NOT NULL,             -- the body of a text post
     author       text,                      -- NULL if the account was deleted
