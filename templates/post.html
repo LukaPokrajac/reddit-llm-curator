@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}{{ p.title }} — r/singularity archive{% endblock %}
+
+{% block content %}
+<style>
+  .detail, .comments-box {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.3rem 1.5rem;
+  }
+  .detail h1 { margin: 0 0 .4rem; font-size: 1.35rem; line-height: 1.3; }
+  .byline { color: var(--muted); font-size: .85rem; margin-bottom: 1rem; }
+  {# white-space: pre-wrap keeps the post's own line breaks without us
+     having to parse its markdown — the simple, safe option. #}
+  .body { white-space: pre-wrap; overflow-wrap: break-word; }
+  .foot {
+    display: flex; gap: 1.2rem; margin-top: 1.2rem; padding-top: .9rem;
+    border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem;
+    flex-wrap: wrap;
+  }
+  .back { display: inline-block; margin-bottom: .8rem; font-size: .9rem; }
+
+  .comments-box { margin-top: 1rem; }
+  .comments-box h2 { margin: 0 0 1rem; font-size: 1.05rem; }
+  .comments-box h2 a { font-weight: 400; font-size: .82rem; margin-left: .6rem; }
+  .comment { margin-top: .9rem; }
+  {# each nesting level indents and draws the classic thread line #}
+  .comment .replies {
+    margin-left: .5rem; padding-left: .9rem; border-left: 2px solid var(--border);
+  }
+  .comment .c-by { color: var(--muted); font-size: .8rem; }
+  .comment .c-body {
+    white-space: pre-wrap; overflow-wrap: break-word;
+    font-size: .93rem; margin: .15rem 0 0;
+  }
+</style>
+
+<a class="back" href="javascript:history.back()">← back</a>
+
+<article class="detail">
+  <h1>{{ p.title }}</h1>
+  <div class="byline">
+    u/{{ p.author or "[deleted]" }} · {{ p.created_utc.strftime("%B %-d, %Y %H:%M") }} UTC
+  </div>
+  <div class="body">{{ p.selftext }}</div>
+  <div class="foot">
+    <span>▲ {{ p.score }}</span>
+    <span>💬 {{ p.num_comments }} comments</span>
+    <a href="{{ p.permalink }}" target="_blank" rel="noopener">view on Reddit ↗</a>
+    <span>fetched {{ p.fetched_at.strftime("%Y-%m-%d %H:%M") }}</span>
+  </div>
+</article>
+
+{# A macro is Jinja's version of a function — and it can call itself,
+   which is exactly what rendering a tree of unknown depth needs. #}
+{% macro comment(c) %}
+<div class="comment">
+  <div class="c-by">u/{{ c.author or "[deleted]" }} · ▲ {{ c.score }}
+    · {{ c.created_utc.strftime("%b %-d, %Y %H:%M") }}</div>
+  <p class="c-body">{{ c.body }}</p>
+  {% if c.replies %}
+  <div class="replies">
+    {% for r in c.replies %}{{ comment(r) }}{% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+<section class="comments-box">
+  <h2>{{ n_comments }} comment{{ '' if n_comments == 1 else 's' }}
+    <a href="/post/{{ p.id }}?refresh">refresh from Arctic Shift</a>
+  </h2>
+  {% for c in tree %}
+    {{ comment(c) }}
+  {% else %}
+    <p class="c-by">No comments stored for this post.</p>
+  {% endfor %}
+</section>
+{% endblock %}

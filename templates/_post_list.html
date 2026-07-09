@@ -1,0 +1,16 @@
+{# Just the post cards, no page around them. index.html includes this for
+   the first batch, and /more renders it alone for each scroll load —
+   one template, so the card markup can never drift out of sync. #}
+{% for p in posts %}
+<article class="post">
+  <h2><a href="/post/{{ p.id }}">{{ p.title }}</a></h2>
+  <div class="byline">
+    u/{{ p.author or "[deleted]" }} · {{ p.created_utc.strftime("%b %-d, %Y %H:%M") }} UTC
+  </div>
+  <p class="preview">{{ p.preview }}{% if p.preview|length == 300 %}…{% endif %}</p>
+  <div class="stats">
+    <span>▲ {{ p.score }}</span>
+    <span>💬 {{ p.num_comments }}</span>
+  </div>
+</article>
+{% endfor %}

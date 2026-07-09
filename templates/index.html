@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .meta-line { color: var(--muted); font-size: .85rem; margin: 0 0 1rem; }
+  article.post {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: .9rem 1.1rem; margin-bottom: .8rem;
+  }
+  article.post h2 { margin: 0 0 .25rem; font-size: 1.05rem; line-height: 1.35; }
+  article.post h2 a { color: var(--text); text-decoration: none; }
+  article.post h2 a:hover { color: var(--accent); }
+  .byline { color: var(--muted); font-size: .82rem; margin-bottom: .4rem; }
+  .preview { color: var(--muted); font-size: .9rem; margin: 0; }
+  .stats { display: flex; gap: 1rem; color: var(--muted); font-size: .82rem; margin-top: .5rem; }
+  #scroll-status { text-align: center; color: var(--muted); padding: 1.2rem 0; font-size: .9rem; }
+</style>
+
+<p class="meta-line">
+  {{ total }} post{{ '' if total == 1 else 's' }}
+  {%- if q %} matching “{{ q }}” — <a href="/">clear search</a>{% endif %}
+</p>
+
+<div id="feed">
+  {% include "_post_list.html" %}
+  {% if not posts %}<p>No posts found.</p>{% endif %}
+</div>
+
+<div id="scroll-status">{% if next %}loading more…{% else %}— end —{% endif %}</div>
+
+{% if next %}
+<script>
+  // Infinite scroll with an IntersectionObserver: the browser tells us when
+  // the #scroll-status sentinel scrolls into view — no scroll-position math,
+  // no polling. Each load asks /more for posts older than the last one we
+  // have (the "cursor"), appends the returned HTML, and updates the cursor.
+  let cursor = {{ next }};
+  let loading = false;
+  const q = {{ q|tojson }};
+  const feed = document.getElementById("feed");
+  const status = document.getElementById("scroll-status");
+
+  const observer = new IntersectionObserver(async (entries) => {
+    if (!entries[0].isIntersecting || loading || cursor === null) return;
+    loading = true;
+    try {
+      const resp = await fetch(`/more?before=${cursor}&q=${encodeURIComponent(q)}`);
+      const data = await resp.json();
+      feed.insertAdjacentHTML("beforeend", data.html);
+      cursor = data.next;
+      if (cursor === null) {
+        status.textContent = "— end —";
+        observer.disconnect();
+      }
+    } catch (err) {
+      status.textContent = "failed to load more — scroll to retry";
+    } finally {
+      loading = false;
+    }
+  }, { rootMargin: "400px" });  // start loading 400px before it's visible
+
+  observer.observe(status);
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Readings — r/singularity{% endblock %}
+
+{% block content %}
+<style>
+  .tabs { display: flex; gap: .5rem; margin-bottom: 1rem; font-size: .85rem; }
+  .tabs a {
+    padding: .3rem .8rem; border-radius: 999px; text-decoration: none;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .tabs a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  article.reading {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: .9rem 1.1rem; margin-bottom: .8rem;
+  }
+  article.reading.read { opacity: .55; }
+  article.reading h2 { margin: 0 0 .25rem; font-size: 1.05rem; line-height: 1.35; }
+  article.reading h2 a { color: var(--text); text-decoration: none; }
+  article.reading h2 a:hover { color: var(--accent); }
+  .rmeta { color: var(--muted); font-size: .82rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+  .reason { color: var(--muted); font-size: .9rem; margin: .35rem 0 0; }
+  .badge {
+    font-size: .72rem; font-weight: 700; letter-spacing: .03em;
+    padding: .1rem .5rem; border-radius: 999px; vertical-align: 2px;
+  }
+  .badge.signal { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .badge.skip   { background: var(--border); color: var(--muted); }
+</style>
+
+<p class="meta-line">
+  Overnight readings by qwen3.6-35b-a3b —
+  {{ counts.get('SIGNAL', 0) }} worth reading, {{ counts.get('SKIP', 0) }} filtered out.
+</p>
+
+<div class="tabs">
+  <a href="/readings" class="{{ 'active' if show == 'signal' }}">To read</a>
+  <a href="/readings?show=skip" class="{{ 'active' if show == 'skip' }}">Skipped</a>
+  <a href="/readings?show=all" class="{{ 'active' if show == 'all' }}">All</a>
+</div>
+
+{% for r in rows %}
+<article class="reading {{ 'read' if r.read_at }}">
+  <h2>
+    {% if r.verdict == 'SIGNAL' %}
+      <a href="/readings/{{ r.post_id }}">{{ r.title }}</a>
+      <span class="badge signal">{{ '✓ read' if r.read_at else 'signal' }}</span>
+    {% else %}
+      {{ r.title }} <span class="badge skip">skip</span>
+    {% endif %}
+  </h2>
+  <div class="rmeta">
+    <span>{{ r.created_utc.strftime('%b %d') }}</span>
+    <span>{{ r.score }} points · {{ r.num_comments }} comments</span>
+    {% if r.verdict == 'SIGNAL' %}<span>~{{ r.words }} words</span>{% endif %}
+  </div>
+  {% if r.verdict != 'SIGNAL' and r.reason %}
+    <p class="reason">{{ r.reason }}</p>
+  {% endif %}
+</article>
+{% else %}
+<p>Nothing here yet — the curator may still be running.</p>
+{% endfor %}
+{% endblock %}

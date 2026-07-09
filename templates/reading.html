@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ r.title }} — Readings{% endblock %}
+
+{% block content %}
+<style>
+  .crumbs { font-size: .85rem; margin-bottom: 1rem; }
+  .rhead {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1rem;
+  }
+  .rhead h1 { margin: 0 0 .4rem; font-size: 1.3rem; line-height: 1.3; }
+  .rmeta { color: var(--muted); font-size: .85rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+  .prose {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.2rem 1.4rem; font-size: 1.02rem; line-height: 1.7;
+  }
+  .prose h1, .prose h2, .prose h3 { line-height: 1.3; }
+  .prose pre { overflow-x: auto; background: var(--bg); padding: .8rem; border-radius: 8px; }
+  .prose code { background: var(--bg); padding: .1rem .3rem; border-radius: 4px; font-size: .9em; }
+  .actions { margin-top: 1rem; display: flex; gap: .8rem; align-items: center; }
+  .actions button {
+    padding: .5rem 1.1rem; border: none; border-radius: 999px; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: 600; font-size: .9rem;
+  }
+  .actions button.done { background: var(--border); color: var(--muted); }
+</style>
+
+<p class="crumbs"><a href="/readings">← readings</a></p>
+
+<div class="rhead">
+  <h1>{{ r.title }}</h1>
+  <div class="rmeta">
+    <span>{{ r.created_utc.strftime('%Y-%m-%d') }}</span>
+    <span>{{ r.score }} points · {{ r.num_comments }} comments</span>
+    <span><a href="{{ r.permalink }}">reddit</a></span>
+    <span><a href="/post/{{ r.post_id }}">local copy + comments</a></span>
+  </div>
+</div>
+
+<div class="prose">{{ body|safe }}</div>
+
+<div class="actions">
+  <button id="read-btn" class="{{ 'done' if r.read_at }}">
+    {{ 'Mark unread' if r.read_at else 'Mark as read' }}
+  </button>
+</div>
+
+<script>
+  const btn = document.getElementById("read-btn");
+  btn.addEventListener("click", async () => {
+    const resp = await fetch("/readings/{{ r.post_id }}/read", { method: "POST" });
+    const data = await resp.json();
+    btn.classList.toggle("done", data.read);
+    btn.textContent = data.read ? "Mark unread" : "Mark as read";
+  });
+</script>
+{% endblock %}
