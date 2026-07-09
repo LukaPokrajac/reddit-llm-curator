@@ -162,3 +162,19 @@ def test_synthesis_prompt_collapses_whitespace():
     out = build_prompt([{"post_id": "a", "title": "T",
                          "article": "one\n\ntwo   three"}])
     assert "one two three" in out
+
+
+# --- eval_verdicts.parse_verdict: verdict-only replies ----------------------
+
+def test_eval_parses_verdict_and_reason():
+    from eval_verdicts import parse_verdict
+    assert parse_verdict("VERDICT: SKIP\nREASON: rehash") == ("SKIP", "rehash")
+
+def test_eval_tolerates_missing_reason_and_case():
+    from eval_verdicts import parse_verdict
+    v, r = parse_verdict("verdict: Signal!")
+    assert v == "SIGNAL" and r == ""
+
+def test_eval_rambling_is_error():
+    from eval_verdicts import parse_verdict
+    assert parse_verdict("I think this is interesting")[0] == "ERROR"

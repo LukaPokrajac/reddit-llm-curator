@@ -335,7 +335,8 @@ def body_block(post: dict) -> str:
 
 
 def ask_model(post: dict, comments: str, prev_titles: list[str],
-              related: str = "(none)") -> str:
+              related: str = "(none)", system: str = SYSTEM,
+              model: str = MODEL, max_tokens: int = MAX_TOKENS) -> str:
     prev = "\n".join(f"- {t}" for t in prev_titles[-15:]) or "(none yet)"
     user = (
         f"Earlier SIGNAL pieces tonight (for cross-referencing):\n{prev}\n\n"
@@ -349,10 +350,10 @@ def ask_model(post: dict, comments: str, prev_titles: list[str],
     resp = requests.post(
         LOCALAI,
         json={
-            "model": MODEL,
-            "max_tokens": MAX_TOKENS,
+            "model": model,
+            "max_tokens": max_tokens,
             "messages": [
-                {"role": "system", "content": SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         },
