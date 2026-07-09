@@ -42,7 +42,11 @@
   <div class="byline">
     u/{{ p.author or "[deleted]" }} · {{ p.created_utc.strftime("%B %-d, %Y %H:%M") }} UTC
   </div>
+  {% if p.url %}
+  <div class="body"><a href="{{ p.url }}" target="_blank" rel="noopener">{{ p.url }}</a></div>
+  {% else %}
   <div class="body">{{ p.selftext }}</div>
+  {% endif %}
   <div class="foot">
     <span>▲ {{ p.score }}</span>
     <span>💬 {{ p.num_comments }} comments</span>

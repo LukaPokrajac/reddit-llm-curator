@@ -1,4 +1,9 @@
-"""Pull text posts from a subreddit via Arctic Shift and store them in Postgres.
+"""Pull posts from a subreddit via Arctic Shift and store them in Postgres.
+
+Text posts are stored with their body; link posts are stored with their URL
+(the curator later fetches and extracts the linked article's text before
+judging). Pure media posts — images, videos, galleries — are skipped: with
+no text to read there is nothing for a text-only curator to judge.
 
 Arctic Shift (https://arctic-shift.photon-reddit.com) is a free community-run
 archive of Reddit with a public API — no credentials needed. It has near-live
@@ -30,8 +35,9 @@ MAX_COMMENTS = 500  # safety cap per post when fetching comments
 
 UPSERT = """
     INSERT INTO posts (id, subreddit, title, selftext, author,
-                       created_utc, score, num_comments, permalink, embedding)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
+                       created_utc, score, num_comments, permalink, url,
+                       embedding)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
     ON CONFLICT (id) DO UPDATE SET
         score        = EXCLUDED.score,
         num_comments = EXCLUDED.num_comments,
@@ -39,6 +45,22 @@ UPSERT = """
         embedding    = COALESCE(EXCLUDED.embedding, posts.embedding),
         fetched_at   = now()
 """
+
+# Hosts/extensions that mean "the content is a picture or video" — nothing a
+# text model can read, so these posts are not stored at all. YouTube is NOT
+# here on purpose: video announcements still get a title and a discussion
+# thread worth judging; the curator just won't have the video's content.
+MEDIA_HOSTS = ("i.redd.it", "v.redd.it", "imgur.com", "i.imgur.com",
+               "reddit.com/gallery", "www.reddit.com/gallery")
+MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".gifv", ".webp",
+                    ".mp4", ".webm")
+
+
+def is_media_url(url: str) -> bool:
+    bare = url.split("://", 1)[-1]
+    path = bare.split("?", 1)[0].lower()
+    return (bare.startswith(MEDIA_HOSTS)
+            or path.endswith(MEDIA_EXTENSIONS))
 
 
 def fetch_page(session: requests.Session, subreddit: str, before: int | None) -> list[dict]:
@@ -74,10 +96,14 @@ def fetch_subreddit(subreddit: str, limit: int = 500, before: int | None = None,
                     scanned += 1
                     # next page = everything older than the oldest post seen
                     before = int(p["created_utc"])
-                    if not p["is_self"]:
-                        continue
-                    if p["selftext"] in ("[removed]", "[deleted]", ""):
-                        continue
+                    if p["is_self"]:
+                        if p["selftext"] in ("[removed]", "[deleted]", ""):
+                            continue  # empty or moderated-away text post
+                        url = None
+                    else:
+                        url = p.get("url") or ""
+                        if not url or is_media_url(url):
+                            continue  # image/video/gallery: nothing to read
                     vector = None
                     if not embeddings_down:
                         try:
@@ -96,6 +122,7 @@ def fetch_subreddit(subreddit: str, limit: int = 500, before: int | None = None,
                         p.get("score", 0),
                         p.get("num_comments", 0),
                         f"https://reddit.com{p['permalink']}",
+                        url,
                         vector,
                     ))
                     stored += 1

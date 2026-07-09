@@ -14,8 +14,11 @@ CREATE TABLE IF NOT EXISTS posts (
     permalink    text NOT NULL,
     fetched_at   timestamptz NOT NULL DEFAULT now(),
     comments_fetched_at timestamptz,        -- NULL = comments never fetched
-    embedding    vector(768)                -- nomic-embed-text of title+body;
+    embedding    vector(768),               -- nomic-embed-text of title+body;
                                             -- NULL until embeddings.py backfills
+    url          text,                      -- link posts: where the post points
+    link_text    text,                      -- extracted article text ('' if none)
+    link_fetched_at timestamptz             -- NULL = article never fetched
 );
 
 CREATE INDEX IF NOT EXISTS posts_created_utc_idx ON posts (created_utc DESC);

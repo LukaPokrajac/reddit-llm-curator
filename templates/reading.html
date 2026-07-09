@@ -61,6 +61,7 @@
     <span>{{ r.created_utc.strftime('%Y-%m-%d') }}</span>
     <span>{{ r.score }} points · {{ r.num_comments }} comments</span>
     <span><a href="{{ r.permalink }}">reddit</a></span>
+    {% if r.url %}<span><a href="{{ r.url }}" target="_blank" rel="noopener">source article ↗</a></span>{% endif %}
     <span><a href="/post/{{ r.post_id }}">local copy + comments</a></span>
   </div>
 </div>

@@ -36,6 +36,7 @@ LOG = os.path.join(HERE, "curation.log")
 DIGEST_DIR = os.path.join(HERE, "readings")
 
 SELFTEXT_CAP = 2500   # chars; keeps prompt inside the model's 8K context
+LINK_TEXT_CAP = 2500  # link posts have no body, so the article takes its place
 COMMENTS_CAP = 3000
 COMMENT_EACH_CAP = 400
 LLM_TIMEOUT = 1200    # seconds; thinking pass can be slow
@@ -66,7 +67,9 @@ or piece. They are the strongest available signal of what he actually wants —
 when a note says a similar skip was a wrong call, or praises/criticizes a
 piece, let it override your general instincts for this verdict and article.
 
-You will get one Reddit post from r/singularity with top comments. Respond in
+You will get one Reddit post with top comments — for link posts, the text of
+the linked article is included when it could be extracted; ground the piece in
+the article itself, not just the commenters' retelling of it. Respond in
 EXACTLY this format:
 
 VERDICT: SIGNAL or SKIP
@@ -117,6 +120,13 @@ def ensure_table(cur) -> None:
             created_at timestamptz NOT NULL DEFAULT now()
         )
     """)
+    # Link-post support arrived after the first deployments; self-migrate.
+    cur.execute("""
+        ALTER TABLE posts
+            ADD COLUMN IF NOT EXISTS url text,
+            ADD COLUMN IF NOT EXISTS link_text text,
+            ADD COLUMN IF NOT EXISTS link_fetched_at timestamptz
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS feedback (
             id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -137,8 +147,15 @@ def wait_for_chat_idle(cur) -> None:
     curation call. Curation loses nothing — the backlog just resumes later."""
     paused = False
     while True:
-        cur.execute("SELECT extract(epoch FROM now() - max(created_at)) AS quiet "
-                    "FROM chat_messages")
+        # Close the caller's transaction before each check. Postgres freezes
+        # now() at transaction start, and the main loop's transaction stays
+        # open across polls — with now() the pause could never end once chat
+        # was seen active (a real 2.5h production hang), while the pinned
+        # snapshot held a lock on posts the whole time. clock_timestamp()
+        # always advances; the rollback drops the snapshot and locks.
+        cur.connection.rollback()
+        cur.execute("SELECT extract(epoch FROM clock_timestamp() - max(created_at)) "
+                    "AS quiet FROM chat_messages")
         quiet = cur.fetchone()["quiet"]
         if quiet is None or quiet > CHAT_QUIET:
             if paused:
@@ -199,6 +216,45 @@ def top_comments(cur, post_id: str) -> str:
         (post_id,),
     )
     return trim_comments([(r["body"], r["score"]) for r in cur.fetchall()])
+
+
+LINK_FETCH_TIMEOUT = 30
+LINK_HTML_CAP = 2_000_000  # bytes; don't feed trafilatura a 200 MB "page"
+LINK_TEXT_MIN = 200        # shorter "articles" are cookie banners / footers
+# Video pages have no article to extract — fetching them yields footer
+# boilerplate that would pollute the prompt as a fake "article".
+VIDEO_HOSTS = ("youtube.com", "www.youtube.com", "youtu.be", "vimeo.com")
+
+
+def ensure_link_text(conn, cur, post: dict) -> None:
+    """Read-through cache for the linked article of a link post: download the
+    URL once, extract the readable text (trafilatura strips nav/ads/boilerplate),
+    and store it on the post. Any failure — dead link, paywall, binary file —
+    stores '' so the post is judged from title + comments and never refetched."""
+    if not post.get("url") or post.get("link_fetched_at") is not None:
+        return
+    text = ""
+    host = post["url"].split("://", 1)[-1].split("/", 1)[0].lower()
+    try:
+        if host in VIDEO_HOSTS:
+            raise ValueError("video page, nothing to extract")
+        import trafilatura  # deferred: heavy import, only link posts pay it
+        resp = requests.get(
+            post["url"], timeout=LINK_FETCH_TIMEOUT, stream=True,
+            headers={"User-Agent": "Mozilla/5.0 (reading-curator; personal project)"})
+        resp.raise_for_status()
+        if "html" in resp.headers.get("Content-Type", "html"):
+            html = resp.raw.read(LINK_HTML_CAP, decode_content=True)
+            text = trafilatura.extract(html.decode(resp.encoding or "utf-8",
+                                                   errors="replace")) or ""
+        if len(text) < LINK_TEXT_MIN:
+            text = ""
+    except Exception as e:
+        log(f"  link fetch failed for {post['id']} ({post['url']}): {e}")
+    cur.execute("UPDATE posts SET link_text = %s, link_fetched_at = now() "
+                "WHERE id = %s", (text, post["id"]))
+    conn.commit()
+    post["link_text"] = text
 
 
 def post_vector(conn, cur, post: dict) -> str:
@@ -263,6 +319,21 @@ def related_posts(cur, post_id: str, vector: str) -> str:
     return format_related(cur.fetchall())
 
 
+def body_block(post: dict) -> str:
+    """The post's own content for the prompt: a text post's body, or for a
+    link post the extracted article text (marker-neutralized — it's arbitrary
+    web content and must not be able to fake Luka's feedback voice)."""
+    link_text = (post.get("link_text") or "").replace(
+        FEEDBACK_MARKER, "reader feedback")
+    if link_text:
+        return (f"LINKED ARTICLE (extracted from {post.get('url')}):\n"
+                f"{link_text[:LINK_TEXT_CAP]}")
+    if post.get("url"):
+        return (f"LINK POST pointing to {post['url']} — the page's text was "
+                "not retrievable; judge from title and comments.")
+    return f"BODY:\n{post['selftext'][:SELFTEXT_CAP]}"
+
+
 def ask_model(post: dict, comments: str, prev_titles: list[str],
               related: str = "(none)") -> str:
     prev = "\n".join(f"- {t}" for t in prev_titles[-15:]) or "(none yet)"
@@ -272,7 +343,7 @@ def ask_model(post: dict, comments: str, prev_titles: list[str],
         f"POST from r/{post['subreddit']} ({post['created_utc']:%Y-%m-%d}, "
         f"{post['score']} points, {post['num_comments']} comments)\n"
         f"TITLE: {post['title']}\n"
-        f"BODY:\n{post['selftext'][:SELFTEXT_CAP]}\n\n"
+        f"{body_block(post)}\n\n"
         f"TOP COMMENTS:\n{comments}"
     )
     resp = requests.post(
@@ -362,6 +433,11 @@ def main() -> None:
             except Exception as e:  # deleted post, API hiccup — curate without comments
                 conn.rollback()
                 log(f"  comments unavailable for {post['id']}: {e}")
+            try:
+                ensure_link_text(conn, cur, post)
+            except Exception as e:  # never lose a post to a bad link
+                conn.rollback()
+                log(f"  link text unavailable for {post['id']}: {e}")
             comments = top_comments(cur, post["id"])
             try:
                 related = related_posts(cur, post["id"],

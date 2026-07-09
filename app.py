@@ -377,8 +377,8 @@ def readings_status():
 def reading(post_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT r.*, p.subreddit, p.title, p.permalink, p.created_utc,
-                      p.score, p.num_comments
+            """SELECT r.*, p.subreddit, p.title, p.permalink, p.url,
+                      p.created_utc, p.score, p.num_comments
                FROM readings r JOIN posts p ON p.id = r.post_id
                WHERE r.post_id = %s""",
             (post_id,),
@@ -449,6 +449,7 @@ so include all of it, not just the changed part)."""
 # Context budget, in the spirit of the curator's caps: everything below has
 # to fit the model's 8K context alongside a 3K-token reply.
 CHAT_BODY_CAP = 1500      # the piece matters more than the raw post here
+CHAT_LINK_CAP = 1200      # extracted article text for link posts
 CHAT_ARTICLE_CAP = 4000
 CHAT_HISTORY_MAX = 6      # prior turns sent to the model
 CHAT_MSG_CAP = 800        # chars per prior turn
@@ -459,7 +460,7 @@ def chat_context(cur, post_id: str) -> str:
     """The pinned first message: post, comments, and the current piece."""
     cur.execute(
         """SELECT p.subreddit, p.title, p.selftext, p.created_utc, p.score,
-                  r.verdict, r.reason, r.article
+                  p.url, p.link_text, r.verdict, r.reason, r.article
            FROM posts p JOIN readings r ON r.post_id = p.id
            WHERE p.id = %s""",
         (post_id,),
@@ -467,11 +468,18 @@ def chat_context(cur, post_id: str) -> str:
     row = cur.fetchone()
     piece = (row["article"] or "")[:CHAT_ARTICLE_CAP] or (
         f"(you skipped this post — your reason: {row['reason']})")
+    if row["link_text"]:
+        body = (f"LINKED ARTICLE (extracted from {row['url']}):\n"
+                f"{row['link_text'][:CHAT_LINK_CAP]}")
+    elif row["url"]:
+        body = f"LINK POST pointing to {row['url']} (text not retrievable)"
+    else:
+        body = f"BODY:\n{row['selftext'][:CHAT_BODY_CAP]}"
     return (
         f"POST from r/{row['subreddit']} ({row['created_utc']:%Y-%m-%d}, "
         f"{row['score']} points)\n"
         f"TITLE: {row['title']}\n"
-        f"BODY:\n{row['selftext'][:CHAT_BODY_CAP]}\n\n"
+        f"{body}\n\n"
         f"TOP COMMENTS:\n{top_comments(cur, post_id)}\n\n"
         f"YOUR PIECE:\n{piece}"
     )
