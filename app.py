@@ -16,7 +16,6 @@ import os
 import re
 import threading
 from collections import defaultdict
-from datetime import datetime, timezone
 
 import markdown
 import psycopg
@@ -25,14 +24,14 @@ from psycopg.rows import dict_row
 from dotenv import load_dotenv
 from flask import Flask, abort, jsonify, render_template, request
 
-from fetch_posts import fetch_subreddit
+from fetch_posts import fetch_subreddit, fetch_comments_from_arctic_shift
+# Importing curate_readings is safe: its run loop is guarded by __main__.
+from curate_readings import LOCALAI, MODEL, PROFILE, LLM_TIMEOUT, top_comments
 
 load_dotenv()
 
 DEFAULT_DB = "postgresql://postgres:postgres@localhost:5432/reddit"
-COMMENTS_API = "https://arctic-shift.photon-reddit.com/api/comments/search"
 BATCH = 25          # posts per infinite-scroll load
-MAX_COMMENTS = 500  # safety cap per post when fetching from Arctic Shift
 
 app = Flask(__name__)
 
@@ -176,37 +175,6 @@ def fetch_status():
     return jsonify(fetch_job)
 
 
-def fetch_comments_from_arctic_shift(post_id: str) -> list[tuple]:
-    """Pull all comments for one post from Arctic Shift, oldest first."""
-    session = requests.Session()
-    session.headers["User-Agent"] = "singularity-scraper/0.1 (personal project)"
-    rows, after = [], None
-    while len(rows) < MAX_COMMENTS:
-        params = {"link_id": post_id, "limit": 100, "sort": "asc"}
-        if after is not None:
-            params["after"] = after
-        resp = session.get(COMMENTS_API, params=params, timeout=30)
-        resp.raise_for_status()
-        batch = resp.json()["data"]
-        if not batch:
-            break
-        for c in batch:
-            after = int(c["created_utc"])
-            # parent_id is "t3_<postid>" for top-level comments and
-            # "t1_<commentid>" for replies — Reddit's type-prefix scheme.
-            parent = c["parent_id"]
-            parent = None if parent.startswith("t3_") else parent[3:]
-            rows.append((
-                c["id"], post_id, parent, c.get("author"),
-                c.get("body", ""),
-                datetime.fromtimestamp(c["created_utc"], tz=timezone.utc),
-                c.get("score", 0),
-            ))
-        if len(batch) < 100:
-            break
-    return rows
-
-
 def build_tree(comments: list[dict]) -> list[dict]:
     """Turn the flat comment rows into a nested tree.
 
@@ -290,7 +258,7 @@ def readings():
             SELECT r.post_id, r.verdict, r.reason, r.read_at, r.created_at,
                    coalesce(array_length(regexp_split_to_array(r.article, '\\s+'), 1), 0)
                        AS words,
-                   p.title, p.created_utc, p.score, p.num_comments
+                   p.subreddit, p.title, p.created_utc, p.score, p.num_comments
             FROM readings r JOIN posts p ON p.id = r.post_id
             WHERE {where}
             ORDER BY (r.read_at IS NULL) DESC, p.created_utc DESC
@@ -301,12 +269,24 @@ def readings():
     return render_template("readings.html", rows=rows, counts=counts, show=show)
 
 
+@app.route("/readings/status")
+def readings_status():
+    """Cheap poll target so the readings list refreshes itself when the
+    24/7 curator lands a new verdict. (Static routes beat the <post_id>
+    converter below, so 'status' is never taken for a post id.)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*) AS n, max(created_at) AS latest FROM readings")
+        row = cur.fetchone()
+    return jsonify(n=row["n"],
+                   latest=row["latest"].isoformat() if row["latest"] else None)
+
+
 @app.route("/readings/<post_id>")
 def reading(post_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT r.*, p.title, p.permalink, p.created_utc, p.score,
-                      p.num_comments
+            """SELECT r.*, p.subreddit, p.title, p.permalink, p.created_utc,
+                      p.score, p.num_comments
                FROM readings r JOIN posts p ON p.id = r.post_id
                WHERE r.post_id = %s""",
             (post_id,),
@@ -314,8 +294,163 @@ def reading(post_id):
         row = cur.fetchone()
         if row is None:
             abort(404)
+        cur.execute("SELECT role, content FROM chat_messages "
+                    "WHERE post_id = %s ORDER BY id", (post_id,))
+        chat = cur.fetchall()
+    for m in chat:  # user text renders escaped; model replies are markdown
+        if m["role"] == "assistant":
+            m["html"] = markdown.markdown(m["content"], extensions=["extra"])
     body = markdown.markdown(row["article"] or "", extensions=["extra"])
-    return render_template("reading.html", r=row, body=body)
+    return render_template("reading.html", r=row, body=body, chat=chat)
+
+
+# --- Chat with the curator under a reading --------------------------------
+#
+# Same background-thread + polling pattern as /fetch: a Qwen reply takes
+# minutes on this hardware (more if the 24/7 curator has it busy), far past
+# what a request — or the cloudflared tunnel's ~100s limit — will wait.
+# POST stores the user message and starts a thread; the page polls
+# /chat/status until the reply is in the DB, then reloads.
+chat_jobs: dict = {}  # post_id -> {"state": running|done|error, ...}
+chat_lock = threading.Lock()
+
+# The model can also revise its piece from chat. The contract mirrors the
+# curator's VERDICT/--- format: prose first, then a marker line, then the
+# full replacement article. parse, don't guess.
+ARTICLE_MARKER = "---ARTICLE---"
+
+CHAT_SYSTEM = PROFILE + f"""
+
+You wrote (or declined to write) the reading piece below for Luka, from a
+Reddit post and its top comments. Continue as a conversation: answer his
+follow-ups in concise markdown, grounded in the post and comments — say so
+when they don't answer something, don't invent thread content. Answering
+what he actually asked comes first — never launch into revising the piece
+unless he explicitly asks for a change to it. If he asks
+you to change, extend or rewrite the piece itself, reply with one short line
+on what you changed, then a line containing exactly
+{ARTICLE_MARKER}
+followed by the complete revised piece in markdown (it replaces the old one,
+so include all of it, not just the changed part)."""
+
+# Context budget, in the spirit of the curator's caps: everything below has
+# to fit the model's 8K context alongside a 3K-token reply.
+CHAT_BODY_CAP = 1500      # the piece matters more than the raw post here
+CHAT_ARTICLE_CAP = 4000
+CHAT_HISTORY_MAX = 6      # prior turns sent to the model
+CHAT_MSG_CAP = 800        # chars per prior turn
+CHAT_MAX_TOKENS = 3000
+
+
+def chat_context(cur, post_id: str) -> str:
+    """The pinned first message: post, comments, and the current piece."""
+    cur.execute(
+        """SELECT p.subreddit, p.title, p.selftext, p.created_utc, p.score,
+                  r.verdict, r.reason, r.article
+           FROM posts p JOIN readings r ON r.post_id = p.id
+           WHERE p.id = %s""",
+        (post_id,),
+    )
+    row = cur.fetchone()
+    piece = (row["article"] or "")[:CHAT_ARTICLE_CAP] or (
+        f"(you skipped this post — your reason: {row['reason']})")
+    return (
+        f"POST from r/{row['subreddit']} ({row['created_utc']:%Y-%m-%d}, "
+        f"{row['score']} points)\n"
+        f"TITLE: {row['title']}\n"
+        f"BODY:\n{row['selftext'][:CHAT_BODY_CAP]}\n\n"
+        f"TOP COMMENTS:\n{top_comments(cur, post_id)}\n\n"
+        f"YOUR PIECE:\n{piece}"
+    )
+
+
+def split_chat_reply(text: str) -> tuple[str, str | None]:
+    """(chat prose, replacement article or None)."""
+    head, sep, tail = text.partition(ARTICLE_MARKER)
+    if sep and tail.strip():
+        return head.strip(), tail.strip()
+    return text.strip(), None
+
+
+def run_chat(post_id: str) -> None:
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            context = chat_context(cur, post_id)
+            cur.execute("SELECT role, content FROM chat_messages "
+                        "WHERE post_id = %s ORDER BY id", (post_id,))
+            history = cur.fetchall()
+
+        messages = [{"role": "system", "content": f"{CHAT_SYSTEM}\n\n{context}"}]
+        for m in history[-CHAT_HISTORY_MAX:]:
+            messages.append({"role": m["role"],
+                             "content": m["content"][:CHAT_MSG_CAP]})
+
+        resp = requests.post(
+            LOCALAI,
+            json={"model": MODEL, "max_tokens": CHAT_MAX_TOKENS,
+                  "messages": messages},
+            timeout=LLM_TIMEOUT,
+        )
+        resp.raise_for_status()
+        reply = resp.json()["choices"][0]["message"]["content"].strip()
+        prose, new_article = split_chat_reply(reply)
+
+        with get_conn() as conn, conn.cursor() as cur:
+            if new_article:
+                cur.execute("UPDATE readings SET article = %s WHERE post_id = %s",
+                            (new_article, post_id))
+            cur.execute("INSERT INTO chat_messages (post_id, role, content) "
+                        "VALUES (%s, 'assistant', %s)",
+                        (post_id, prose or "(revised the piece)"))
+            conn.commit()
+        chat_jobs[post_id] = {"state": "done"}
+    except Exception as exc:  # surface the failure to the UI, don't die silently
+        chat_jobs[post_id] = {"state": "error", "error": str(exc)[:300]}
+
+
+@app.route("/readings/<post_id>/chat", methods=["POST"])
+def chat_send(post_id):
+    message = request.form.get("message", "").strip()
+    if not message:
+        return jsonify(error="empty message"), 400
+
+    with chat_lock:
+        if chat_jobs.get(post_id, {}).get("state") == "running":
+            return jsonify(error="still thinking about the last message"), 409
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM readings WHERE post_id = %s", (post_id,))
+            if cur.fetchone() is None:
+                abort(404)
+            cur.execute("INSERT INTO chat_messages (post_id, role, content) "
+                        "VALUES (%s, 'user', %s)", (post_id, message))
+            conn.commit()
+        chat_jobs[post_id] = {"state": "running"}
+
+    threading.Thread(target=run_chat, args=(post_id,), daemon=True).start()
+    return jsonify(chat_jobs[post_id])
+
+
+@app.route("/readings/<post_id>/chat/status")
+def chat_status(post_id):
+    if post_id not in chat_jobs:
+        # The job dict is memory, but the question is in the DB — if Flask
+        # restarted while a reply was cooking, the last stored message is
+        # still the user's. Respawn the reply instead of reporting idle, so
+        # a pending chat survives any restart (the page polls on load).
+        with chat_lock:
+            if post_id not in chat_jobs:  # re-check: another poll may have won
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute("SELECT role FROM chat_messages WHERE post_id = %s "
+                                "ORDER BY id DESC LIMIT 1", (post_id,))
+                    row = cur.fetchone()
+                if row and row["role"] == "user":
+                    chat_jobs[post_id] = {"state": "running"}
+                    threading.Thread(target=run_chat, args=(post_id,),
+                                     daemon=True).start()
+    job = chat_jobs.get(post_id, {"state": "idle"})
+    if job["state"] in ("done", "error"):  # one-shot result: hand over, reset
+        chat_jobs.pop(post_id, None)
+    return jsonify(job)
 
 
 @app.route("/readings/<post_id>/read", methods=["POST"])

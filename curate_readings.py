@@ -24,10 +24,8 @@ import psycopg
 import requests
 from dotenv import load_dotenv
 
-# Reuse the Flask app's Arctic Shift comment fetcher (module import does not
-# start the server — that's guarded by __main__).
-from app import fetch_comments_from_arctic_shift
 from embeddings import embed, post_text, vec_literal
+from fetch_posts import fetch_comments_from_arctic_shift
 
 load_dotenv()
 
@@ -43,12 +41,16 @@ COMMENT_EACH_CAP = 400
 LLM_TIMEOUT = 1200    # seconds; thinking pass can be slow
 MAX_TOKENS = 4000
 
-SYSTEM = """You are an overnight reading curator for Luka, an engineer in Belgrade \
+# The reader profile is shared with the chat under each reading (app.py),
+# so the model talks to the same Luka it curates for.
+PROFILE = """You are a reading curator for Luka, an engineer in Belgrade \
 building a career in automation, AI/ML, robotics and industrial systems. What he \
 knows well: Python, Docker, Kafka, PostgreSQL, MQTT/ESP32 embedded work, Grafana, \
 ETL/Airflow. What he is currently learning (explain these when they come up): ML \
 fundamentals, linear algebra, power electronics, robotics. He does not follow \
-day-to-day AI drama, and does not want hype, memes, doomposting or culture war.
+day-to-day AI drama, and does not want hype, memes, doomposting or culture war."""
+
+SYSTEM = PROFILE + """
 If RELATED PAST POSTS show the same news or discussion was already covered,
 lean SKIP and say it's a rehash; if a past SIGNAL piece connects, reference it.
 
@@ -94,6 +96,38 @@ def ensure_table(cur) -> None:
             created_at timestamptz NOT NULL DEFAULT now()
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            post_id    text NOT NULL REFERENCES posts (id),
+            role       text NOT NULL,           -- user | assistant
+            content    text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now()
+        )
+    """)
+
+
+CHAT_QUIET = 600  # s without chat activity before curation resumes
+
+
+def wait_for_chat_idle(cur) -> None:
+    """Luka's chat replies beat batch curation: while a conversation under a
+    reading is active (a message in the last CHAT_QUIET seconds), hold off
+    starting the next post so his follow-ups don't queue behind a ~6-minute
+    curation call. Curation loses nothing — the backlog just resumes later."""
+    paused = False
+    while True:
+        cur.execute("SELECT extract(epoch FROM now() - max(created_at)) AS quiet "
+                    "FROM chat_messages")
+        quiet = cur.fetchone()["quiet"]
+        if quiet is None or quiet > CHAT_QUIET:
+            if paused:
+                log("  chat quiet — resuming curation")
+            return
+        if not paused:
+            log("  chat active — pausing curation between posts")
+            paused = True
+        time.sleep(30)
 
 
 def ensure_comments(conn, cur, post_id: str) -> None:
@@ -274,6 +308,7 @@ def main() -> None:
 
     done = signal = errors = 0
     for post in todo:
+        wait_for_chat_idle(cur)
         t0 = time.time()
         try:
             try:

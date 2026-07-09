@@ -24,7 +24,9 @@ from embeddings import embed, post_text, vec_literal
 load_dotenv()
 
 API = "https://arctic-shift.photon-reddit.com/api/posts/search"
+COMMENTS_API = "https://arctic-shift.photon-reddit.com/api/comments/search"
 DEFAULT_DB = "postgresql://postgres:postgres@localhost:5432/reddit"
+MAX_COMMENTS = 500  # safety cap per post when fetching comments
 
 UPSERT = """
     INSERT INTO posts (id, subreddit, title, selftext, author,
@@ -102,6 +104,37 @@ def fetch_subreddit(subreddit: str, limit: int = 500, before: int | None = None,
                     progress(scanned, stored, before)
                 time.sleep(1)  # be polite to the free API
     return scanned, stored
+
+
+def fetch_comments_from_arctic_shift(post_id: str) -> list[tuple]:
+    """Pull all comments for one post from Arctic Shift, oldest first."""
+    session = requests.Session()
+    session.headers["User-Agent"] = "singularity-scraper/0.1 (personal project)"
+    rows, after = [], None
+    while len(rows) < MAX_COMMENTS:
+        params = {"link_id": post_id, "limit": 100, "sort": "asc"}
+        if after is not None:
+            params["after"] = after
+        resp = session.get(COMMENTS_API, params=params, timeout=30)
+        resp.raise_for_status()
+        batch = resp.json()["data"]
+        if not batch:
+            break
+        for c in batch:
+            after = int(c["created_utc"])
+            # parent_id is "t3_<postid>" for top-level comments and
+            # "t1_<commentid>" for replies — Reddit's type-prefix scheme.
+            parent = c["parent_id"]
+            parent = None if parent.startswith("t3_") else parent[3:]
+            rows.append((
+                c["id"], post_id, parent, c.get("author"),
+                c.get("body", ""),
+                datetime.fromtimestamp(c["created_utc"], tz=timezone.utc),
+                c.get("score", 0),
+            ))
+        if len(batch) < 100:
+            break
+    return rows
 
 
 def main() -> None:

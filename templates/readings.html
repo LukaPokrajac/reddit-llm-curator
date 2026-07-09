@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Readings — r/singularity{% endblock %}
+{% block title %}Readings{% endblock %}
 
 {% block content %}
 <style>
@@ -49,6 +49,7 @@
     {% endif %}
   </h2>
   <div class="rmeta">
+    <span>r/{{ r.subreddit }}</span>
     <span>{{ r.created_utc.strftime('%b %d') }}</span>
     <span>{{ r.score }} points · {{ r.num_comments }} comments</span>
     {% if r.verdict == 'SIGNAL' %}<span>~{{ r.words }} words</span>{% endif %}
@@ -60,4 +61,23 @@
 {% else %}
 <p>Nothing here yet — the curator may still be running.</p>
 {% endfor %}
+
+<script>
+  // The 24/7 curator lands new verdicts at any hour; refresh the list when
+  // it does. Cheap poll of count+latest — no work when nothing changed,
+  // and no polling at all while the tab is hidden (checked on return).
+  let baseline = null;
+  async function checkFresh() {
+    if (document.hidden) return;
+    try {
+      const d = await (await fetch("/readings/status")).json();
+      const key = d.n + "|" + d.latest;
+      if (baseline === null) baseline = key;
+      else if (key !== baseline) location.reload();
+    } catch (e) { /* app restarting — try again next tick */ }
+  }
+  checkFresh();
+  setInterval(checkFresh, 45000);
+  document.addEventListener("visibilitychange", checkFresh);
+</script>
 {% endblock %}

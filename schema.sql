@@ -47,3 +47,16 @@ CREATE TABLE IF NOT EXISTS readings (
     created_at timestamptz NOT NULL DEFAULT now(),
     read_at    timestamptz              -- set when marked read in the UI
 );
+
+-- Per-post conversation with the curator model, shown under the reading
+-- (app.py /readings/<id>/chat). The model can revise readings.article from
+-- here, so the chat is the piece's edit history in prose form.
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    post_id    text NOT NULL REFERENCES posts (id),
+    role       text NOT NULL,           -- user | assistant
+    content    text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_post_id_idx ON chat_messages (post_id, id);

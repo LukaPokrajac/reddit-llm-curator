@@ -23,6 +23,33 @@
     background: var(--accent); color: #fff; font-weight: 600; font-size: .9rem;
   }
   .actions button.done { background: var(--border); color: var(--muted); }
+  #chat { margin-top: 2rem; }
+  #chat h2 { font-size: 1.05rem; margin-bottom: .8rem; }
+  .msg {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: .7rem 1rem; margin-bottom: .6rem;
+    font-size: .95rem; line-height: 1.6;
+  }
+  .msg.user { border-left: 3px solid var(--accent); white-space: pre-wrap; }
+  .msg .who {
+    font-size: .72rem; font-weight: 700; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: .25rem;
+  }
+  .msg p:first-child { margin-top: 0; }
+  .msg p:last-child { margin-bottom: 0; }
+  #thinking { color: var(--muted); font-size: .9rem; padding: .4rem 0; }
+  #chat-error { color: #c0392b; font-size: .9rem; padding: .4rem 0; }
+  #chat-form { display: flex; gap: .6rem; align-items: flex-end; margin-top: .8rem; }
+  #chat-form textarea {
+    flex: 1; min-height: 3.2rem; resize: vertical; padding: .55rem .7rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); color: var(--text); font: inherit; font-size: .95rem;
+  }
+  #chat-form button {
+    padding: .55rem 1.2rem; border: none; border-radius: 999px; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: 600; font-size: .9rem;
+  }
+  #chat-form button:disabled { opacity: .5; cursor: default; }
 </style>
 
 <p class="crumbs"><a href="/readings">← readings</a></p>
@@ -30,6 +57,7 @@
 <div class="rhead">
   <h1>{{ r.title }}</h1>
   <div class="rmeta">
+    <span>r/{{ r.subreddit }}</span>
     <span>{{ r.created_utc.strftime('%Y-%m-%d') }}</span>
     <span>{{ r.score }} points · {{ r.num_comments }} comments</span>
     <span><a href="{{ r.permalink }}">reddit</a></span>
@@ -45,6 +73,25 @@
   </button>
 </div>
 
+<section id="chat">
+  <h2>Ask qwen about this</h2>
+  {% for m in chat %}
+    {% if m.role == 'assistant' %}
+      <div class="msg assistant"><div class="who">qwen</div>{{ m.html|safe }}</div>
+    {% else %}
+      <div class="msg user"><div class="who">you</div>{{ m.content }}</div>
+    {% endif %}
+  {% endfor %}
+  <div id="thinking" hidden>qwen is thinking — minutes on this hardware,
+    longer if it's mid-curation. The reply lands here when ready; you can
+    leave and come back.</div>
+  <div id="chat-error" hidden></div>
+  <form id="chat-form">
+    <textarea name="message" placeholder="Ask a follow-up, or tell qwen to rewrite/extend the piece…" required></textarea>
+    <button type="submit">Send</button>
+  </form>
+</section>
+
 <script>
   const btn = document.getElementById("read-btn");
   btn.addEventListener("click", async () => {
@@ -53,5 +100,71 @@
     btn.classList.toggle("done", data.read);
     btn.textContent = data.read ? "Mark unread" : "Mark as read";
   });
+
+  // Chat: POST the message, then poll until the reply is in the DB and
+  // reload — the server renders the history, so there's no client-side
+  // message building, and a piece revised by the model rerenders too.
+  const form = document.getElementById("chat-form");
+  const thinking = document.getElementById("thinking");
+  const errBox = document.getElementById("chat-error");
+
+  function setBusy(busy) {
+    thinking.hidden = !busy;
+    form.querySelector("button").disabled = busy;
+  }
+
+  async function poll() {
+    const resp = await fetch("/readings/{{ r.post_id }}/chat/status");
+    const job = await resp.json();
+    if (job.state === "running") {
+      setTimeout(poll, 3000);
+    } else if (job.state === "error") {
+      setBusy(false);
+      errBox.textContent = "qwen failed: " + job.error;
+      errBox.hidden = false;
+    } else if (job.state === "done") {
+      location.hash = "chat";
+      location.reload();
+    } else {
+      setBusy(false);  // idle: nothing pending (fresh page load)
+    }
+  }
+
+  // Show the sent message immediately (the server renders it identically
+  // on the next reload, so this is just skipping the wait).
+  function appendUserMsg(text) {
+    const div = document.createElement("div");
+    div.className = "msg user";
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = "you";
+    div.appendChild(who);
+    div.appendChild(document.createTextNode(text));
+    thinking.before(div);
+    div.scrollIntoView({ block: "nearest" });
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    errBox.hidden = true;
+    const message = form.querySelector("textarea").value;
+    const resp = await fetch("/readings/{{ r.post_id }}/chat", {
+      method: "POST",
+      body: new FormData(form),
+    });
+    if (!resp.ok) {
+      errBox.textContent = (await resp.json()).error;
+      errBox.hidden = false;
+      return;
+    }
+    appendUserMsg(message);
+    form.querySelector("textarea").value = "";
+    setBusy(true);
+    setTimeout(poll, 3000);
+  });
+
+  // A reply may still be cooking from before a reload — pick it back up.
+  setBusy(true);
+  poll();
 </script>
 {% endblock %}
