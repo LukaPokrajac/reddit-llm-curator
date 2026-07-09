@@ -105,6 +105,24 @@ def ensure_comments(conn, cur, post_id: str) -> None:
     time.sleep(1)  # be polite to the free API
 
 
+def trim_comments(rows: list[tuple[str, int]],
+                  cap: int = COMMENTS_CAP,
+                  each_cap: int = COMMENT_EACH_CAP) -> str:
+    """Pure trimming logic: (body, score) pairs -> prompt block within budget.
+
+    Each comment is whitespace-collapsed and hard-capped; we stop adding
+    comments when the total would exceed the block budget. Kept free of any
+    DB/IO so it can be unit-tested (see test_curate.py)."""
+    out, used = [], 0
+    for body, score in rows:
+        body = " ".join(body.split())[:each_cap]
+        if used + len(body) > cap:
+            break
+        out.append(f"[{score} points] {body}")
+        used += len(body)
+    return "\n".join(out) if out else "(no comments)"
+
+
 def top_comments(cur, post_id: str) -> str:
     """Top-level comments by score, trimmed to fit the context budget."""
     cur.execute(
@@ -113,15 +131,7 @@ def top_comments(cur, post_id: str) -> str:
            ORDER BY score DESC LIMIT 15""",
         (post_id,),
     )
-    out, used = [], 0
-    for row in cur.fetchall():
-        body, score = row["body"], row["score"]
-        body = " ".join(body.split())[:COMMENT_EACH_CAP]
-        if used + len(body) > COMMENTS_CAP:
-            break
-        out.append(f"[{score} points] {body}")
-        used += len(body)
-    return "\n".join(out) if out else "(no comments)"
+    return trim_comments([(r["body"], r["score"]) for r in cur.fetchall()])
 
 
 def ask_model(post: dict, comments: str, prev_titles: list[str]) -> str:
