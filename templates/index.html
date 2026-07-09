@@ -35,7 +35,9 @@
 </style>
 
 {# Pull form: kicks off a background fetch on the server (POST /fetch),
-   then polls /fetch/status until it finishes. #}
+   then polls /fetch/status until it finishes. Owner-only — the server
+   rejects guest POSTs too; hiding it here just keeps the demo honest. #}
+{% if admin %}
 <form class="pull" id="pull-form">
   <input name="subreddit" placeholder="subreddit, e.g. LocalLLaMA" required
          pattern="(r/)?[A-Za-z0-9_]{2,21}" title="letters, digits, underscore">
@@ -44,6 +46,7 @@
   <button type="submit">Pull</button>
   <span id="pull-status"></span>
 </form>
+{% endif %}
 
 <p class="meta-line">
   {{ total }} post{{ '' if total == 1 else 's' }}
@@ -57,6 +60,7 @@
 
 <div id="scroll-status">{% if next %}loading more…{% else %}— end —{% endif %}</div>
 
+{% if admin %}
 <script>
   // The pull form: submit starts a server-side fetch, then we poll
   // /fetch/status every 2s. Polling beats holding the request open because
@@ -117,6 +121,7 @@
   fetch("/fetch/status").then(r => r.json())
     .then(job => { if (job.state === "running") showJob(job); });
 </script>
+{% endif %}
 
 {% if next %}
 <script>

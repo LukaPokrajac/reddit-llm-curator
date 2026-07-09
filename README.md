@@ -101,6 +101,23 @@ embeddings (`EMBEDDINGS_URL`); the reader profile and editorial rules live in
 the `SYSTEM` prompt in `curate_readings.py` — edit them to curate for someone
 who isn't me.
 
+## Exposing it publicly
+
+The site is safe to put behind a public tunnel as a read-only demo: anyone
+can browse posts, readings and past chats, but every mutating action —
+chatting with the model, pulling subreddits, toggling read state — requires
+an admin cookie. Set `ADMIN_TOKEN` in `.env` (e.g.
+`python -c "import secrets; print(secrets.token_urlsafe(24))"`), then open
+`/unlock/<that token>` once in your browser; share that URL only with people
+you trust to spend your GPU time. Without `ADMIN_TOKEN` set, the app fails
+closed (nobody can mutate anything).
+
+Untrusted content is also fenced defensively end to end: Reddit text is
+quoted into LLM prompts as explicitly untrusted data (with structural marker
+strings stripped), and everything the model writes is sanitized with `nh3`
+before it's rendered as HTML — so a hostile Reddit post can neither hijack
+the curator's instructions nor get scripts into the page.
+
 ## Numbers from a real run
 
 106 posts from r/singularity, one night on a Ryzen 3 3100 + RX 6600 XT (8 GB):

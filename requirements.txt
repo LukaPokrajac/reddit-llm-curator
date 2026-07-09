@@ -3,4 +3,5 @@ psycopg[binary]
 requests
 python-dotenv
 markdown
+nh3
 pytest

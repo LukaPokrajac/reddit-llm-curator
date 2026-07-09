@@ -67,11 +67,13 @@
 
 <div class="prose">{{ body|safe }}</div>
 
+{% if admin %}
 <div class="actions">
   <button id="read-btn" class="{{ 'done' if r.read_at }}">
     {{ 'Mark unread' if r.read_at else 'Mark as read' }}
   </button>
 </div>
+{% endif %}
 
 <section id="chat">
   <h2>Ask qwen about this</h2>
@@ -79,9 +81,10 @@
     {% if m.role == 'assistant' %}
       <div class="msg assistant"><div class="who">qwen</div>{{ m.html|safe }}</div>
     {% else %}
-      <div class="msg user"><div class="who">you</div>{{ m.content }}</div>
+      <div class="msg user"><div class="who">{{ 'you' if admin else 'luka' }}</div>{{ m.content }}</div>
     {% endif %}
   {% endfor %}
+  {% if admin %}
   <div id="thinking" hidden>qwen is thinking — minutes on this hardware,
     longer if it's mid-curation. The reply lands here when ready; you can
     leave and come back.</div>
@@ -90,8 +93,15 @@
     <textarea name="message" placeholder="Ask a follow-up, or tell qwen to rewrite/extend the piece…" required></textarea>
     <button type="submit">Send</button>
   </form>
+  {% else %}
+  <p style="color: var(--muted); font-size: .9rem;">
+    {%- if not chat %}(no conversation on this one yet — chatting is
+    owner-only in the live demo){% else %}(chatting is owner-only in the
+    live demo){% endif %}</p>
+  {% endif %}
 </section>
 
+{% if admin %}
 <script>
   const btn = document.getElementById("read-btn");
   btn.addEventListener("click", async () => {
@@ -167,4 +177,5 @@
   setBusy(true);
   poll();
 </script>
+{% endif %}
 {% endblock %}
