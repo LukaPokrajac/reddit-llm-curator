@@ -47,12 +47,18 @@
       background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
     }
     a { color: var(--accent); }
+    #curator-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex: none;
+      background: #eab308; /* yellow = idle, until the first poll says otherwise */
+    }
+    #curator-dot.active { background: #22c55e; }
   </style>
 </head>
 <body>
   <header class="site">
     <div class="wrap">
       <a class="brand" href="/">r/singularity</a>
+      <span id="curator-dot" title="curator idle"></span>
       <a href="/readings" style="text-decoration:none; font-weight:600; white-space:nowrap;">Readings</a>
       <a href="/weekly" style="text-decoration:none; font-weight:600; white-space:nowrap;">Weekly</a>
       <form class="search" action="/" method="get">
@@ -65,5 +71,22 @@
   <main class="wrap">
     {% block content %}{% endblock %}
   </main>
+  <script>
+    // Header dot: green while Qwen is working (curator run or a chat reply),
+    // yellow when idle. Poll kept slow — it's a status light, not a progress bar.
+    (function () {
+      const dot = document.getElementById("curator-dot");
+      async function poll() {
+        try {
+          const r = await fetch("/curator/status");
+          const {active} = await r.json();
+          dot.classList.toggle("active", active);
+          dot.title = active ? "Qwen is curating" : "curator idle";
+        } catch (e) { /* transient network blip: keep the last state */ }
+      }
+      poll();
+      setInterval(poll, 15000);
+    })();
+  </script>
 </body>
 </html>

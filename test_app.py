@@ -101,6 +101,25 @@ def test_no_token_configured_fails_closed(client, monkeypatch):
     assert client.post("/fetch", data={"subreddit": "python"}).status_code == 403
 
 
+# --- curator status dot: systemd state + chat jobs -> one boolean ----------
+# curator_running is stubbed so tests don't depend on the machine's systemd.
+
+def test_status_idle_when_unit_inactive_and_no_chat(client, monkeypatch):
+    monkeypatch.setattr(webapp, "curator_running", lambda: False)
+    monkeypatch.setattr(webapp, "chat_jobs", {})
+    assert client.get("/curator/status").get_json() == {"active": False}
+
+def test_status_active_while_curator_unit_runs(client, monkeypatch):
+    monkeypatch.setattr(webapp, "curator_running", lambda: True)
+    monkeypatch.setattr(webapp, "chat_jobs", {})
+    assert client.get("/curator/status").get_json() == {"active": True}
+
+def test_status_active_while_a_chat_reply_cooks(client, monkeypatch):
+    monkeypatch.setattr(webapp, "curator_running", lambda: False)
+    monkeypatch.setattr(webapp, "chat_jobs", {"abc": {"state": "running"}})
+    assert client.get("/curator/status").get_json() == {"active": True}
+
+
 # --- split_chat_reply still honors the marker from the model itself --------
 
 def test_model_can_still_replace_article():

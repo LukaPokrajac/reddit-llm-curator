@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import re
+import subprocess
 import threading
 from collections import defaultdict
 
@@ -376,6 +377,32 @@ def readings_status():
         row = cur.fetchone()
     return jsonify(n=row["n"],
                    latest=row["latest"].isoformat() if row["latest"] else None)
+
+
+# The curator pipeline is a systemd --user oneshot (reddit-curator.service):
+# "activating" the whole time ExecStart runs, "inactive" between timer runs.
+# Asking systemd beats watching curation.log's mtime, which goes quiet for
+# many minutes while Qwen thinks about one post.
+CURATOR_UNIT = "reddit-curator.service"
+
+
+def curator_running() -> bool:
+    try:
+        state = subprocess.run(
+            ["systemctl", "--user", "is-active", CURATOR_UNIT],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return state in ("activating", "active", "reloading")
+
+
+@app.route("/curator/status")
+def curator_status():
+    """Poll target for the header dot: is Qwen busy right now? A chat reply
+    being generated counts too — the GPU is just as occupied either way."""
+    chatting = any(j.get("state") == "running" for j in chat_jobs.values())
+    return jsonify(active=curator_running() or chatting)
 
 
 @app.route("/weekly")
