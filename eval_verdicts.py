@@ -31,8 +31,9 @@ from datetime import date, datetime, timezone
 import psycopg
 from psycopg.rows import dict_row
 
-from curate_readings import (DIGEST_DIR, MODEL, SYSTEM, ask_model, llm_ready,
-                             log, post_vector, related_posts, top_comments)
+from curate_readings import (DIGEST_DIR, MODEL, SYSTEM, ask_model,
+                             ensure_chunks, llm_ready, log, post_vector,
+                             related_posts, top_comments)
 
 EVAL_SYSTEM = SYSTEM + """
 
@@ -82,7 +83,8 @@ def main() -> None:
         t0 = time.time()
         try:
             related = related_posts(cur, post["id"],
-                                    post_vector(conn, cur, post))
+                                    [post_vector(conn, cur, post)]
+                                    + ensure_chunks(conn, cur, post))
             reply = ask_model(post, top_comments(cur, post["id"]), [],
                               related, system=EVAL_SYSTEM, model=args.model,
                               max_tokens=EVAL_MAX_TOKENS)

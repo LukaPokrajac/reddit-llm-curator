@@ -27,6 +27,19 @@ CREATE INDEX IF NOT EXISTS posts_created_utc_idx ON posts (created_utc DESC);
 -- No ANN index on embedding: exact scan is fast up to ~100K rows; add
 -- `USING hnsw (embedding vector_cosine_ops)` if the table ever gets there.
 
+-- Chunk vectors of a post's link text (extracted article or video
+-- transcript), so related-post retrieval matches on what the linked page
+-- says, not just the headline. Vectors only — the text stays in
+-- posts.link_text. Like posts.embedding, these are long-term memory:
+-- prune.py clears old link_text but leaves the chunk vectors.
+-- (curate_readings.py and embeddings.py also create this on start.)
+CREATE TABLE IF NOT EXISTS post_chunks (
+    post_id   text NOT NULL REFERENCES posts (id),
+    idx       smallint NOT NULL,
+    embedding vector(768) NOT NULL,
+    PRIMARY KEY (post_id, idx)
+);
+
 CREATE TABLE IF NOT EXISTS comments (
     id          text PRIMARY KEY,            -- Reddit's base36 comment id
     post_id     text NOT NULL REFERENCES posts (id),

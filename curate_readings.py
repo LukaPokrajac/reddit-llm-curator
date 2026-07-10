@@ -24,7 +24,7 @@ import psycopg
 import requests
 from dotenv import load_dotenv
 
-from embeddings import embed, post_text, vec_literal
+from embeddings import CHUNKS_DDL, chunk_text, embed, post_text, vec_literal
 from fetch_posts import community, fetch_comments
 
 load_dotenv()
@@ -68,9 +68,9 @@ when a note says a similar skip was a wrong call, or praises/criticizes a
 piece, let it override your general instincts for this verdict and article.
 
 You will get one post (from Reddit or Hacker News) with top comments — for
-link posts, the text of
-the linked article is included when it could be extracted; ground the piece in
-the article itself, not just the commenters' retelling of it. Respond in
+link posts, the text of the linked article (or the transcript of a linked
+video) is included when it could be extracted; ground the piece in the
+article or talk itself, not just the commenters' retelling of it. Respond in
 EXACTLY this format:
 
 VERDICT: SIGNAL or SKIP
@@ -130,6 +130,7 @@ def ensure_table(cur) -> None:
             ADD COLUMN IF NOT EXISTS link_fetched_at timestamptz,
             ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'reddit'
     """)
+    cur.execute(CHUNKS_DDL)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS feedback (
             id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -225,31 +226,82 @@ LINK_FETCH_TIMEOUT = 30
 LINK_HTML_CAP = 2_000_000  # bytes; don't feed trafilatura a 200 MB "page"
 LINK_TEXT_MIN = 200        # shorter "articles" are cookie banners / footers
 # Video pages have no article to extract — fetching them yields footer
-# boilerplate that would pollute the prompt as a fake "article".
-VIDEO_HOSTS = ("youtube.com", "www.youtube.com", "youtu.be", "vimeo.com")
+# boilerplate that would pollute the prompt as a fake "article". YouTube is
+# handled separately: its videos usually carry captions worth reading.
+VIDEO_HOSTS = ("vimeo.com", "player.vimeo.com")
+YOUTUBE_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be")
+TRANSCRIPT_CAP = 20_000    # chars stored; feeds chunk embeddings + the prompt
+
+
+def url_host(url: str) -> str:
+    return url.split("://", 1)[-1].split("/", 1)[0].lower()
+
+
+def caption_track_url(info: dict) -> str | None:
+    """Best English caption track from a yt-dlp info dict: manual subtitles
+    beat auto-generated, plain 'en' beats regional variants, and we need the
+    json3 format (structured, trivially parseable). Pure, unit-tested."""
+    for tracks_by_lang in (info.get("subtitles") or {},
+                           info.get("automatic_captions") or {}):
+        for lang in sorted(tracks_by_lang, key=lambda l: (l != "en", l)):
+            if lang == "en" or lang.startswith(("en-", "en_")):
+                for track in tracks_by_lang[lang]:
+                    if track.get("ext") == "json3" and track.get("url"):
+                        return track["url"]
+    return None
+
+
+def transcript_from_json3(data: dict) -> str:
+    """YouTube's json3 caption payload -> plain text. Events hold segments of
+    caption text (newlines arrive as their own segments); whitespace-collapse
+    the lot into one readable stream. Pure, unit-tested."""
+    segs = (seg.get("utf8", "") for ev in data.get("events", [])
+            for seg in ev.get("segs") or [])
+    return " ".join(" ".join(segs).split())
+
+
+def fetch_youtube_transcript(url: str) -> str:
+    """The spoken content of a YouTube link: probe available caption tracks
+    with yt-dlp (no video download), fetch the best English one, flatten to
+    text. Returns '' when the video has no captions at all."""
+    import yt_dlp  # deferred: heavy import, only video links pay it
+    opts = {"skip_download": True, "noplaylist": True,
+            "quiet": True, "no_warnings": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    track = caption_track_url(info)
+    if not track:
+        return ""
+    resp = requests.get(track, timeout=LINK_FETCH_TIMEOUT)
+    resp.raise_for_status()
+    return transcript_from_json3(resp.json())[:TRANSCRIPT_CAP]
 
 
 def ensure_link_text(conn, cur, post: dict) -> None:
-    """Read-through cache for the linked article of a link post: download the
-    URL once, extract the readable text (trafilatura strips nav/ads/boilerplate),
-    and store it on the post. Any failure — dead link, paywall, binary file —
-    stores '' so the post is judged from title + comments and never refetched."""
+    """Read-through cache for the linked content of a link post: download the
+    URL once, extract the readable text (trafilatura strips nav/ads/boilerplate;
+    YouTube links get their caption transcript instead), and store it on the
+    post. Any failure — dead link, paywall, binary file — stores '' so the
+    post is judged from title + comments and never refetched."""
     if not post.get("url") or post.get("link_fetched_at") is not None:
         return
     text = ""
-    host = post["url"].split("://", 1)[-1].split("/", 1)[0].lower()
+    host = url_host(post["url"])
     try:
-        if host in VIDEO_HOSTS:
+        if host in YOUTUBE_HOSTS:
+            text = fetch_youtube_transcript(post["url"])
+        elif host in VIDEO_HOSTS:
             raise ValueError("video page, nothing to extract")
-        import trafilatura  # deferred: heavy import, only link posts pay it
-        resp = requests.get(
-            post["url"], timeout=LINK_FETCH_TIMEOUT, stream=True,
-            headers={"User-Agent": "Mozilla/5.0 (reading-curator; personal project)"})
-        resp.raise_for_status()
-        if "html" in resp.headers.get("Content-Type", "html"):
-            html = resp.raw.read(LINK_HTML_CAP, decode_content=True)
-            text = trafilatura.extract(html.decode(resp.encoding or "utf-8",
-                                                   errors="replace")) or ""
+        else:
+            import trafilatura  # deferred: heavy import, only link posts pay it
+            resp = requests.get(
+                post["url"], timeout=LINK_FETCH_TIMEOUT, stream=True,
+                headers={"User-Agent": "Mozilla/5.0 (reading-curator; personal project)"})
+            resp.raise_for_status()
+            if "html" in resp.headers.get("Content-Type", "html"):
+                html = resp.raw.read(LINK_HTML_CAP, decode_content=True)
+                text = trafilatura.extract(html.decode(resp.encoding or "utf-8",
+                                                       errors="replace")) or ""
         if len(text) < LINK_TEXT_MIN:
             text = ""
     except Exception as e:
@@ -270,6 +322,27 @@ def post_vector(conn, cur, post: dict) -> str:
                 (vec, post["id"]))
     conn.commit()
     return vec
+
+
+def ensure_chunks(conn, cur, post: dict) -> list[str]:
+    """Chunk vectors of the post's link text (article or transcript), in
+    pgvector text form — computed and stored on first sight, read back after.
+    They serve twice: stored, they let future retrieval match this post by
+    its substance; returned, they are extra query vectors for judging this
+    post. A post without link text has no chunks ([])."""
+    cur.execute("SELECT embedding FROM post_chunks WHERE post_id = %s "
+                "ORDER BY idx", (post["id"],))
+    stored = [r["embedding"] for r in cur.fetchall()]
+    if stored or not post.get("link_text"):
+        return stored
+    vecs = [vec_literal(embed(chunk))
+            for chunk in chunk_text(post["link_text"])]
+    cur.executemany(
+        "INSERT INTO post_chunks (post_id, idx, embedding) "
+        "VALUES (%s, %s, %s::vector)",
+        [(post["id"], i, v) for i, v in enumerate(vecs)])
+    conn.commit()
+    return vecs
 
 
 # Luka's notes ride into the prompt under this marker, which the SYSTEM
@@ -297,38 +370,60 @@ def format_related(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def related_posts(cur, post_id: str, vector: str) -> str:
+def related_posts(cur, post_id: str, vectors: list[str]) -> str:
     """Semantically closest already-judged posts, as a prompt block. Lets the
     model spot rehashes and link to earlier coverage beyond tonight's run —
     and carries Luka's notes on those posts, so feedback he leaves in the UI
     steers future verdicts on similar material.
+
+    Every query vector (title+body, plus the post's link-text chunks) is
+    matched against every vector a past post has (its own, plus chunks), and
+    each past post scores its best match — so an article's substance can find
+    a past post whose headline never mentioned it, and vice versa.
     Cosine similarity below ~0.5 is noise for nomic-embed-text, so we cut there."""
     cur.execute(
-        """SELECT p.title, p.created_utc, r.verdict, r.reason, fb.notes
-           FROM posts p
-           JOIN readings r ON r.post_id = p.id
+        """WITH q AS (SELECT unnest(%s::text[])::vector AS v),
+           best AS (
+               SELECT u.post_id, min(u.dist) AS dist
+               FROM (
+                   SELECT p.id AS post_id, p.embedding <=> q.v AS dist
+                   FROM posts p CROSS JOIN q
+                   WHERE p.embedding IS NOT NULL AND p.id <> %s
+                   UNION ALL
+                   SELECT c.post_id, c.embedding <=> q.v
+                   FROM post_chunks c CROSS JOIN q
+                   WHERE c.post_id <> %s
+               ) u
+               GROUP BY u.post_id
+           )
+           SELECT p.title, p.created_utc, r.verdict, r.reason, fb.notes
+           FROM best b
+           JOIN posts p ON p.id = b.post_id
+           JOIN readings r ON r.post_id = b.post_id
            LEFT JOIN LATERAL (
                SELECT string_agg(left(content, %s), ' | ') AS notes
                FROM (SELECT content FROM feedback
                      WHERE post_id = p.id ORDER BY id DESC LIMIT %s) t
            ) fb ON TRUE
-           WHERE p.embedding IS NOT NULL AND p.id <> %s
-             AND r.verdict IN ('SIGNAL', 'SKIP')
-             AND 1 - (p.embedding <=> %s::vector) > 0.5
-           ORDER BY p.embedding <=> %s::vector
+           WHERE r.verdict IN ('SIGNAL', 'SKIP') AND b.dist < 0.5
+           ORDER BY b.dist
            LIMIT 5""",
-        (FEEDBACK_NOTE_CAP, FEEDBACK_NOTES_MAX, post_id, vector, vector),
+        (vectors, post_id, post_id, FEEDBACK_NOTE_CAP, FEEDBACK_NOTES_MAX),
     )
     return format_related(cur.fetchall())
 
 
 def body_block(post: dict) -> str:
     """The post's own content for the prompt: a text post's body, or for a
-    link post the extracted article text (marker-neutralized — it's arbitrary
-    web content and must not be able to fake Luka's feedback voice)."""
+    link post the extracted article text or video transcript (marker-
+    neutralized — it's arbitrary web content and must not be able to fake
+    Luka's feedback voice)."""
     link_text = (post.get("link_text") or "").replace(
         FEEDBACK_MARKER, "reader feedback")
     if link_text:
+        if url_host(post.get("url") or "") in YOUTUBE_HOSTS:
+            return (f"VIDEO TRANSCRIPT (captions of {post.get('url')}, may "
+                    f"lack punctuation):\n{link_text[:LINK_TEXT_CAP]}")
         return (f"LINKED ARTICLE (extracted from {post.get('url')}):\n"
                 f"{link_text[:LINK_TEXT_CAP]}")
     if post.get("url"):
@@ -444,8 +539,13 @@ def main() -> None:
                 log(f"  link text unavailable for {post['id']}: {e}")
             comments = top_comments(cur, post["id"])
             try:
-                related = related_posts(cur, post["id"],
-                                        post_vector(conn, cur, post))
+                vectors = [post_vector(conn, cur, post)]
+                try:
+                    vectors += ensure_chunks(conn, cur, post)
+                except Exception as e:  # retrieval still works headline-only
+                    conn.rollback()
+                    log(f"  chunk embeddings unavailable for {post['id']}: {e}")
+                related = related_posts(cur, post["id"], vectors)
             except Exception as e:  # embedding server down — curate without
                 conn.rollback()
                 related = "(unavailable)"

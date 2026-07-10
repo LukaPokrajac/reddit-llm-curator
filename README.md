@@ -46,9 +46,11 @@ runs continuously and unattended (systemd timer, `Nice=10`), so latency per
 post doesn't matter.
 
 **Long-term memory via pgvector** — every post is embedded (nomic-embed-text,
-768 dims) on ingest; before judging a post, the curator retrieves the five
-most similar already-judged posts by cosine distance and puts their verdicts
-in the prompt. An 8K-context model can't remember hundreds of past posts, but
+768 dims) on ingest, and link posts additionally get chunk embeddings of the
+extracted article or transcript, so similarity works on what the linked page
+says, not just the headline; before judging a post, the curator retrieves the
+five most similar already-judged posts (best match across all their vectors)
+by cosine distance and puts their verdicts in the prompt. An 8K-context model can't remember hundreds of past posts, but
 it doesn't have to — retrieval selects what's relevant. Observed effect: the
 model starts calling out rehashes ("rehash of the 'LLM coding agent can ship
 playable software' narrative") instead of judging every post in isolation.
@@ -71,8 +73,11 @@ or a stronger referee via `EVAL_MODEL` — disagrees with the stored verdicts.
 communities are) get the linked page downloaded once and reduced to readable
 text with trafilatura, trimmed into the same context budget, so the model can
 correct the commenters from the source instead of judging news by its
-headline. Media-only links (images, video) are skipped at ingest; video
-hosts and paywalled pages degrade gracefully to title + comments.
+headline. YouTube links get their caption transcript instead (yt-dlp probes
+the tracks, manual subs preferred over auto-generated), so talks and demos
+are judged by what was said, not by the title. Media-only links (images,
+raw video files) are skipped at ingest; caption-less videos and paywalled
+pages degrade gracefully to title + comments.
 
 **Zoom out on schedule** — `synthesize.py` (weekly systemd timer) hands the
 model excerpts of the week's SIGNAL pieces and has it write "what actually
@@ -102,7 +107,7 @@ is the difference between "working" and "broken".
 
 Python · Flask + gunicorn · PostgreSQL + pgvector (psycopg3) · LocalAI
 (llama.cpp, Vulkan) · Qwen3.6-35B-A3B GGUF · Ollama (nomic-embed-text) ·
-Arctic Shift API · HN Algolia API · trafilatura · Docker · systemd
+Arctic Shift API · HN Algolia API · trafilatura · yt-dlp · Docker · systemd
 
 ## Run it
 
@@ -114,7 +119,7 @@ ollama pull nomic-embed-text
 
 .venv/bin/python fetch_posts.py --subreddit singularity --limit 500
 .venv/bin/python fetch_hn.py                # HN front page into the same table
-.venv/bin/python embeddings.py              # backfill vectors for pre-existing posts
+.venv/bin/python embeddings.py              # backfill post + link-text chunk vectors
 .venv/bin/python curate_readings.py         # one curation run (resumable)
 .venv/bin/python app.py                     # http://localhost:8010/readings (dev)
 ```

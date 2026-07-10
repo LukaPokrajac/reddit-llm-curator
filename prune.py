@@ -1,10 +1,11 @@
 """Data lifecycle: shed the bulk of old skipped posts, keep the memory.
 
-The pgvector retrieval needs every judged post's title, embedding and
-verdict forever — that IS the curator's long-term memory. What nothing
-needs months later is the bulk attached to posts that were skipped:
-their comment threads and extracted link articles. This deletes those
-for SKIP posts judged more than --days ago (default 90).
+The pgvector retrieval needs every judged post's title, embeddings (the
+title+body vector and any link-text chunk vectors) and verdict forever —
+that IS the curator's long-term memory. What nothing needs months later
+is the bulk attached to posts that were skipped: their comment threads
+and extracted link articles. This deletes those for SKIP posts judged
+more than --days ago (default 90).
 
 SIGNAL posts are never touched: their comments back the reading page.
 

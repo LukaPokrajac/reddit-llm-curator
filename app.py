@@ -29,7 +29,8 @@ from flask import Flask, abort, jsonify, redirect, render_template, request
 
 from fetch_posts import fetch_subreddit, fetch_comments, community
 # Importing curate_readings is safe: its run loop is guarded by __main__.
-from curate_readings import LOCALAI, MODEL, PROFILE, LLM_TIMEOUT, top_comments
+from curate_readings import (LOCALAI, MODEL, PROFILE, LLM_TIMEOUT,
+                             YOUTUBE_HOSTS, top_comments, url_host)
 
 load_dotenv()
 
@@ -505,8 +506,10 @@ def chat_context(cur, post_id: str) -> str:
     piece = (row["article"] or "")[:CHAT_ARTICLE_CAP] or (
         f"(you skipped this post — your reason: {row['reason']})")
     if row["link_text"]:
-        body = (f"LINKED ARTICLE (extracted from {row['url']}):\n"
-                f"{row['link_text'][:CHAT_LINK_CAP]}")
+        label = ("VIDEO TRANSCRIPT (captions of"
+                 if url_host(row["url"] or "") in YOUTUBE_HOSTS
+                 else "LINKED ARTICLE (extracted from")
+        body = f"{label} {row['url']}):\n{row['link_text'][:CHAT_LINK_CAP]}"
     elif row["url"]:
         body = f"LINK POST pointing to {row['url']} (text not retrievable)"
     else:
